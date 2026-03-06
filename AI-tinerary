@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""
+AI-tinerary: Advanced Contract Processing Pipeline
+
+Stack:
+- Ollama (local model) for contract parsing.
+- openrouteservice (FOSS routing engine) for driving mileage.
+- Pydantic for strict schema validation.
+- ThreadPoolExecutor for parallel processing.
+"""
+
+import csv
+import json
+import logging
+import argparse
+from pathlib import Path
+from io import BytesIO
+from email import policy
+from email.parser import BytesParser
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
+from pypdf import PdfReader
+import openrouteservice
+from pydantic import BaseModel, Field, ValidationError
+from dotenv import load_dotenv
+import os
+
+# ------------- CONFIGURATION & SETUP -------------
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
+
+# Project Paths
+ROOT_DIR = Path(__file__).resolve().parent
+CONTRACTS_DIR = ROOT_DIR / "Contracts" / "Incoming"
+OUTPUTS_DIR = ROOT_DIR / "Outputs"
+COMPLETE_DIR = ROOT_DIR / "Contracts" / "Complete"
+MASTER_CSV = OUTPUTS_DIR / "master-output.csv"
+
+# Env Vars
+HOME_BASE_ADDRESS = os.getenv("HOME_BASE_ADDRESS", "Johnson City, TN, United States")
+ORS_API_KEY = os.getenv("ORS_API_KEY", "")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b")
+MAX_THREADS = int(os.getenv("MAX_THREADS", 4))
+
+# ------------- SCHEMA VALIDATION -------------
+
+class ContractData(BaseModel):
+    """Pydantic model to strictly enforce the output schema and defaults."""
+    starting_date: str = Field(default="", alias="Starting Date")
+    ending_date: str = Field(default="", alias="Ending Date")
+    venue: str = Field(default="", alias="Venue")
+    location: str = Field(default="", alias="Location")
+    booking: str = Field(default="FALSE", alias="Booking")
+    mgmt: str = Field(default="FALSE", alias="MGMT")
+    door_deal: str = Field(default="FALSE", alias="Door Deal")
+    dd_notes: str = Field(default="", alias="DD Notes")
+    hospitality: str = Field(default="", alias="Hospitality")
+    contact_name: str = Field(default="", alias="Contact Name")
+    contact_details: str = Field(default="", alias="Contact Details")
+    other_details: str = Field(default="", alias="Other Details")
+    address: str = Field(default="", alias="Address")
+    accommodations: str = Field(default="", alias="Accomodations") # Keeping typo from original sheet
+    accom_address: str = Field(default="", alias="Accom Address")
+    est_mileage: str = Field(default="", alias="Est. Mileage")
+    time: str = Field(default="", alias="Time")
+    doors: str = Field(default="", alias="Doors")
+    load_in: str = Field(default="", alias="Load In")
+    pay: str = Field(default="", alias="Pay")
+    sound_person: str = Field(default="", alias="Sound - Person")
+    sound_system: str = Field(default="", alias="Sound - System")
+    other_expenses: str = Field(default="", alias="Other Expenses")
+
+    class Config:
+        populate_by_name = True
+
+SHEET_COLUMNS = list(ContractData.model_fields.keys())
+# Map attribute names back to original CSV aliases for writing
+CSV_HEADERS = [ContractData.model_fields[k].alias or k for k in SHEET_COLUMNS]
+
+
+# ------------- TEXT EXTRACTION -------------
+
+def read_pdf_bytes_text(pdf_bytes: bytes) -> str:
+    reader = PdfReader(BytesIO(pdf_bytes))
+    return "\n\n".join(page.extract_text() or "" for page in reader.pages)
+
+def read_file_text(file_path: Path) -> str:
+    """Extracts text from PDF or EML appropriately."""
+    if file_path.suffix.lower() == ".pdf":
+        return read_pdf_bytes_text(file_path.read_bytes())
+    
+    # EML Processing
+    with open(file_path, "rb") as f:
+        msg = BytesParser(policy=policy.default).parse(f)
+
+    parts = [
+        f"Subject: {msg['subject'] or ''}\nFrom: {msg['from'] or ''}\nDate: {msg['date'] or ''}"
+    ]
+
+    body = msg.get_body(preferencelist=("plain", "html"))
+    if body:
+        try:
+            parts.append(body.get_content())
+        except Exception:
+            pass
+
+    for attachment in msg.iter_attachments():
+        filename = attachment.get_filename() or ""
+        if attachment.get_content_type() == "application/pdf" or filename.lower().endswith(".pdf"):
+            try:
+                parts.append(read_pdf_bytes_text(attachment.get_content()))
+            except Exception as e:
+                logger.warning(f"Could not read attachment {filename}: {e}")
+
+    return "\n\n".join(parts)
+
+
+# ------------- AI & API SERVICES -------------
+
+def call_ollama_extract(contract_text: str) -> ContractData:
+    """Calls Ollama and maps the output securely to the Pydantic model."""
+    system_instructions = f"""
+You are an expert booking assistant extracting data from performance contracts and emails.
+The band departs from: "{HOME_BASE_ADDRESS}"
+
+Extract the data into a pure JSON object. If you cannot find a value, use an empty string "".
+Expected keys (use exactly these):
+{json.dumps(CSV_HEADERS, indent=2)}
+
+Rules:
+- Dates: Use "M/D" (e.g. "5/8").
+- Booleans: Use "TRUE" or "FALSE" strings for "Booking", "MGMT", "Door Deal".
+- "Est. Mileage": Always leave empty "".
+- Output NOTHING but valid JSON.
+"""
+    try:
+        resp = requests.post(
+            OLLAMA_URL, 
+            json={"model": OLLAMA_MODEL, "prompt": system_instructions + "\n\nTEXT:\n" + contract_text, "stream": False, "format": "json"}, 
+            timeout=180
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        
+        # Parse output securely through Pydantic
+        raw_json = json.loads(data.get("response", "{}"))
+        return ContractData(**raw_json)
+        
+    except (requests.RequestException, json.JSONDecodeError, ValidationError) as e:
+        logger.error(f"AI Extraction failed. Returning empty struct. Error: {e}")
+        return ContractData() # Returns all empty defaults
+
+def get_driving_distance_miles(dest_addr: str) -> str:
+    """Calculate driving distance using OpenRouteService."""
+    if not ORS_API_KEY or not dest_addr:
+        return ""
+
+    client = openrouteservice.Client(key=ORS_API_KEY)
+    try:
+        # Geocode origin and destination
+        origin = client.pelias_search(text=HOME_BASE_ADDRESS, size=1)["features"][0]["geometry"]["coordinates"]
+        dest = client.pelias_search(text=dest_addr, size=1)["features"][0]["geometry"]["coordinates"]
+        
+        # Route
+        route = client.directions(coordinates=[origin, dest], profile="driving-car", format="json")
+        miles = route["routes"][0]["summary"]["distance"] / 1609.34
+        return f"{miles:.2f}"
+    except Exception as e:
+        logger.warning(f"Routing failed for '{dest_addr}': {e}")
+        return ""
+
+# ------------- WORKFLOW LOGIC -------------
+
+def process_single_file(file_path: Path):
+    """Process a single document from start to finish."""
+    logger.info(f"Processing: {file_path.name}")
+    
+    # 1. Extract Text
+    text = read_file_text(file_path)
+    if not text.strip():
+        logger.warning(f"No text found in {file_path.name}, skipping.")
+        return False
+
+    # 2. AI Extraction
+    extracted_data = call_ollama_extract(text)
+    
+    # 3. Post-process (Booleans & Mileage)
+    for attr in ['booking', 'mgmt', 'door_deal']:
+        val = getattr(extracted_data, attr).strip().upper()
+        setattr(extracted_data, attr, "TRUE" if val in ("TRUE", "YES", "Y", "1") else "FALSE")
+    
+    dest_addr = extracted_data.address or (f"{extracted_data.venue}, {extracted_data.location}" if extracted_data.location else "")
+    if dest_addr:
+        extracted_data.est_mileage = get_driving_distance_miles(dest_addr)
+    
+    if not extracted_data.venue:
+        extracted_data.venue = file_path.stem
+
+    # 4. Save to CSV
+    csv_path = OUTPUTS_DIR / f"{file_path.stem}.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+        writer.writeheader()
+        writer.writerow(extracted_data.model_dump(by_alias=True))
+        
+    # 5. Archive
+    file_path.rename(COMPLETE_DIR / file_path.name)
+    logger.info(f"Successfully processed and archived {file_path.name}")
+    return True
+
+def combine_csvs():
+    """Combines all individual CSVs in Outputs into one master CSV."""
+    logger.info("Combining CSV files...")
+    csv_paths = [p for p in OUTPUTS_DIR.glob("*.csv") if not p.name.lower().startswith("master")]
+    
+    if not csv_paths:
+        logger.info("No CSV files to combine.")
+        return
+
+    with open(MASTER_CSV, "w", newline="", encoding="utf-8") as out_f:
+        writer = csv.writer(out_f)
+        writer.writerow(CSV_HEADERS)
+        
+        for path in sorted(csv_paths):
+            with open(path, newline="", encoding="utf-8") as in_f:
+                reader = csv.reader(in_f)
+                try:
+                    next(reader) # Skip header
+                    for row in reader:
+                        writer.writerow(row)
+                except StopIteration:
+                    continue
+
+    logger.info(f"Combined {len(csv_paths)} file(s) into {MASTER_CSV.name}")
+
+def setup_dirs():
+    for d in [CONTRACTS_DIR, OUTPUTS_DIR, COMPLETE_DIR]:
+        d.mkdir(parents=True, exist_ok=True)
+
+def main():
+    parser = argparse.ArgumentParser(description="AI-tinerary Contract Processor")
+    parser.add_argument("--process-only", action="store_true", help="Only process files, do not combine CSVs")
+    parser.add_argument("--combine-only", action="store_true", help="Only combine existing CSVs, do not process files")
+    args = parser.parse_args()
+
+    setup_dirs()
+
+    if not args.combine_only:
+        files = [p for p in CONTRACTS_DIR.glob("*") if p.suffix.lower() in (".pdf", ".eml")]
+        if not files:
+            logger.info(f"No contract files found in {CONTRACTS_DIR}")
+        else:
+            logger.info(f"Found {len(files)} files. Starting processing with {MAX_THREADS} threads...")
+            # Parallel Processing
+            with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+                futures = {executor.submit(process_single_file, f): f for f in files}
+                for future in as_completed(futures):
+                    future.result() # Will raise exceptions if any occurred inside thread
+
+    if not args.process_only:
+        combine_csvs()
+        
+    logger.info("Workflow complete.")
+
+if __name__ == "__main__":
+    main()
