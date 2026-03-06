@@ -1,5 +1,14 @@
 # AI-tinerary
-AI-tinerary is a powerful, multithreaded Python utility designed to parse contract emails and PDFs, extract complex event details using local AI (Ollama), calculate driving mileages via routing APIs, and generate structured CSV outputs for band itinerary planning.🚀 What's NewUnified CLI: Processing and combining CSVs is handled by a single aitinerary.py script.Environment Configuration: Secure .env file for API keys and configuration.Parallel Processing: Handles multiple files simultaneously, drastically speeding up data ingestion.Strict Validation: Uses Pydantic to ensure AI outputs perfectly match the target CSV spreadsheet schema.📁 Repository Structure
+AI-tinerary is a powerful, multithreaded Python utility designed to parse contract emails and PDFs, extract complex event details using local AI (Ollama), calculate driving mileages via routing APIs, and generate structured CSV outputs for band itinerary planning.
+
+## 🚀 What's NewUnified CLI:
+
+- Processing and combining CSVs is handled by a single aitinerary.py script.
+- Environment Configuration: Secure .env file for API keys and configuration.
+- Parallel Processing: Handles multiple files simultaneously, drastically speeding up data ingestion.
+- Strict Validation: Uses Pydantic to ensure AI outputs perfectly match the target CSV spreadsheet schema.
+
+## 📁 Repository Structure
 ```
 AI-tinerary/
 ├── AI-tinerary              # Main application script
