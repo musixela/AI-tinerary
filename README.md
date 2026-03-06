@@ -1,4 +1,5 @@
-AI-tineraryAI-tinerary is a powerful, multithreaded Python utility designed to parse contract emails and PDFs, extract complex event details using local AI (Ollama), calculate driving mileages via routing APIs, and generate structured CSV outputs for band itinerary planning.🚀 What's NewUnified CLI: Processing and combining CSVs is handled by a single aitinerary.py script.Environment Configuration: Secure .env file for API keys and configuration.Parallel Processing: Handles multiple files simultaneously, drastically speeding up data ingestion.Strict Validation: Uses Pydantic to ensure AI outputs perfectly match the target CSV spreadsheet schema.📁 Repository Structure
+# AI-tinerary
+AI-tinerary is a powerful, multithreaded Python utility designed to parse contract emails and PDFs, extract complex event details using local AI (Ollama), calculate driving mileages via routing APIs, and generate structured CSV outputs for band itinerary planning.🚀 What's NewUnified CLI: Processing and combining CSVs is handled by a single aitinerary.py script.Environment Configuration: Secure .env file for API keys and configuration.Parallel Processing: Handles multiple files simultaneously, drastically speeding up data ingestion.Strict Validation: Uses Pydantic to ensure AI outputs perfectly match the target CSV spreadsheet schema.📁 Repository Structure
 ```
 AI-tinerary/
 ├── AI-tinerary              # Main application script
@@ -11,7 +12,7 @@ AI-tinerary/
 └── Outputs/                 # Generated individual CSVs and the master CSV
 ```
 
-🛠️ Getting Started
+## 🛠️ Getting Started
 
 ### Option 1: Automated Setup (Recommended)
 
@@ -92,4 +93,13 @@ python AI-tinerary
 python AI-tinerary --process-only  # Process files, but don't merge them
 python AI-tinerary --combine-only  # Just merge existing CSVs into the master file
 ```
-⚙️ How it WorksIngestion: Reads text directly from PDFs, .eml bodies, and .eml PDF attachments.AI Extraction: Feeds text to the local LLM with strict formatting prompts.Validation: Pydantic validates the data structure. Missing keys are populated with defaults, protecting your CSV format.Geocoding: OpenRouteService calculates the driving mileage from your home base to the venue.Output: Writes individual <filename>.csv files and compiles everything into a master-output.csv.📄 LicenseReleased under the GPL License. See LICENSE for details.
+## ⚙️ How it Works
+
+1. Ingestion: Reads text directly from PDFs, .eml bodies, and .eml PDF attachments.
+2. AI Extraction: Feeds text to the local LLM with strict formatting prompts.Validation: Pydantic validates the data structure. Missing keys are populated with defaults, protecting your CSV format.
+3. Geocoding: OpenRouteService calculates the driving mileage from your home base to the venue.
+4. Output: Writes individual <filename>.csv files and compiles everything into a master-output.csv.
+
+## 📄 License
+
+Released under the GPL License. See LICENSE for details.
