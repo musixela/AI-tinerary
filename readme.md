@@ -95,7 +95,10 @@ python AI-tinerary --combine-only  # Just merge existing CSVs into the master fi
 ```
 ## ⚙️ How it Works
 
-Ingestion: Reads text directly from PDFs, .eml bodies, and .eml PDF attachments.AI Extraction: Feeds text to the local LLM with strict formatting prompts.Validation: Pydantic validates the data structure. Missing keys are populated with defaults, protecting your CSV format.Geocoding: OpenRouteService calculates the driving mileage from your home base to the venue.Output: Writes individual <filename>.csv files and compiles everything into a master-output.csv.
+1. Ingestion: Reads text directly from PDFs, .eml bodies, and .eml PDF attachments.
+2. AI Extraction: Feeds text to the local LLM with strict formatting prompts.Validation: Pydantic validates the data structure. Missing keys are populated with defaults, protecting your CSV format.
+3. Geocoding: OpenRouteService calculates the driving mileage from your home base to the venue.
+4. Output: Writes individual <filename>.csv files and compiles everything into a master-output.csv.
 
 ## 📄 License
 
