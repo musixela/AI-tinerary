@@ -4,7 +4,7 @@ AI-tinerary is a powerful, multithreaded Python utility designed to parse contra
 ## 🚀 What's NewUnified CLI:
 
 - Processing and combining CSVs is handled by a single aitinerary.py script.
-- Environment Configuration: Secure .env file for API keys and configuration.
+- Environment Configuration: `Master Config.txt` file controls API keys and settings.
 - Parallel Processing: Handles multiple files simultaneously, drastically speeding up data ingestion.
 - Strict Validation: Uses Pydantic to ensure AI outputs perfectly match the target CSV spreadsheet schema.
 
@@ -14,7 +14,8 @@ AI-tinerary/
 ├── AI-tinerary              # Main application script
 ├── setup.sh                 # Automated setup for macOS/Linux
 ├── Dependencies.txt         # Python dependencies
-├── .env                     # Configuration (created by setup)
+├── Master Config.txt        # Master configuration (editable by user)
+├── google_scripts/          # Google Apps Script helpers (see README section)
 ├── Contracts/               
 │   ├── Incoming/            # Place raw .eml and .pdf contracts here
 │   └── Complete/            # Processed files are automatically archived here
@@ -22,6 +23,31 @@ AI-tinerary/
 ```
 
 ## 🛠️ Getting Started
+
+### 📎 Google Apps Script Helper
+
+A small Google Apps Script is included under `google_scripts/` to automatically save attachments
+from labeled Gmail threads into a synced Google Drive folder. It is useful for grabbing contract
+PDFs and `.eml` files before running the Python pipeline.
+
+1. Open [Google Apps Script](https://script.google.com/) and create a new project.
+2. Copy the contents of `google_scripts/label-exporter.gs` into your script editor.
+3. Update the configuration constants (`SOURCE_LABEL_NAME`, `INCOMING_DRIVE_FOLDER_ID`, and
+   `COMPLETE_DRIVE_FOLDER_ID`) to point at the two folders you sync locally. The first
+   should mirror `Contracts/Incoming`, the second `Contracts/Complete`.
+4. Set a time‑driven trigger (e.g. every 15 minutes) to run `saveConfirmedShowsAttachmentsToDrive`.
+
+> **Cleanup step:**
+> Once the Python pipeline has processed the incoming files and placed (or synced) them into the
+> Complete folder, run `cleanupDriveFolder()` from the script editor or configure a second trigger
+> (daily or whenever convenient). This helper will trash whatever is currently in the **complete**
+> Drive folder, preventing the attachments from persisting anywhere other than the original email.
+> It does not inspect creation dates or processing success, so ensure your local logic has
+> finished before triggering it.
+
+The Drive folder should be the same one that is synced to `Contracts/Incoming` locally.
+
+---
 
 ### Option 1: Automated Setup (Recommended)
 
@@ -43,7 +69,7 @@ The setup scripts will:
 - Create and activate a Python virtual environment
 - Install all dependencies from `Dependencies.txt`
 - Create required directories
-- Generate a `.env` configuration template
+- Generate a `Master Config.txt` configuration template
 
 ### Option 2: Manual Setup
 
@@ -68,7 +94,10 @@ pip install -r Dependencies.txt
 
 ### Configure Settings
 
-Edit the `.env` file (created by setup script or manually):
+Edit the `Master Config.txt` file in the project root. This is the master configuration
+file and is read by the Python script using dotenv semantics. The setup script
+will generate it with defaults if it does not already exist.
+
 ```bash
 # Ollama Settings
 OLLAMA_URL=http://localhost:11434/api/generate

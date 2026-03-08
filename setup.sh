@@ -63,11 +63,12 @@ mkdir -p "$PROJECT_DIR/Outputs"
 echo "✓ Directories created"
 echo ""
 
-# Create .env if it doesn't exist
-if [ ! -f "$PROJECT_DIR/.env" ]; then
-    echo "Creating .env file (template)..."
-    cat > "$PROJECT_DIR/.env" << 'EOF'
-# AI-tinerary Environment Configuration
+# Create Master Config.txt if it doesn't exist
+if [ ! -f "$PROJECT_DIR/Master Config.txt" ]; then
+    echo "Creating Master Config.txt file (template...)"
+    cat > "$PROJECT_DIR/Master Config.txt" << 'EOF'
+# AI-tinerary Master Configuration
+# Edit this file to control the Python scripts.  It uses dotenv format.
 
 # Ollama Settings
 OLLAMA_URL=http://localhost:11434/api/generate
@@ -82,9 +83,9 @@ ORS_API_KEY=your_api_key_here
 # Processing
 MAX_THREADS=4
 EOF
-    echo "✓ .env template created (edit with your settings)"
+    echo "✓ Master Config.txt template created (edit with your settings)"
 else
-    echo "✓ .env file already exists"
+    echo "✓ Master Config.txt already exists"
 fi
 echo ""
 
@@ -93,7 +94,7 @@ echo "Setup Complete! ✓"
 echo "================================"
 echo ""
 echo "Next steps:"
-echo "1. Edit .env with your configuration:"
+echo "1. Edit Master Config.txt with your configuration:"
 echo "   - Set OLLAMA_URL and OLLAMA_MODEL"
 echo "   - Set HOME_BASE_ADDRESS"
 echo "   - Set ORS_API_KEY (optional, for routing)"

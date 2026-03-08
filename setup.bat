@@ -82,11 +82,12 @@ if not exist "%PROJECT_DIR%\Outputs" mkdir "%PROJECT_DIR%\Outputs"
 echo [OK] Directories created
 echo.
 
-REM Create .env if it doesn't exist
-if not exist "%PROJECT_DIR%\.env" (
-    echo Creating .env file (template)...
+REM Create Master Config.txt if it doesn't exist
+if not exist "%PROJECT_DIR%\Master Config.txt" (
+    echo Creating Master Config.txt file (template)...
     (
-        echo # AI-tinerary Environment Configuration
+        echo # AI-tinerary Master Configuration
+        echo # Edit this file to control the Python scripts
         echo.
         echo # Ollama Settings
         echo OLLAMA_URL=http://localhost:11434/api/generate
@@ -95,15 +96,15 @@ if not exist "%PROJECT_DIR%\.env" (
         echo # Home Base Address (where the band departs from^)
         echo HOME_BASE_ADDRESS=Johnson City, TN, United States
         echo.
-        echo # OpenRouteService API Key (get one at https://openrouteservice.org/^)
+        echo # OpenRouteService API Key (get one at https://openrouteservice.org^)
         echo ORS_API_KEY=your_api_key_here
         echo.
         echo # Processing
         echo MAX_THREADS=4
-    ) > "%PROJECT_DIR%\.env"
-    echo [OK] .env template created (edit with your settings^)
+    ) > "%PROJECT_DIR%\Master Config.txt"
+    echo [OK] Master Config.txt template created (edit with your settings^)
 ) else (
-    echo [OK] .env file already exists
+    echo [OK] Master Config.txt already exists
 )
 echo.
 
@@ -112,7 +113,7 @@ echo Setup Complete!
 echo ================================
 echo.
 echo Next steps:
-echo 1. Edit .env with your configuration:
+echo 1. Edit Master Config.txt with your configuration:
 echo    - Set OLLAMA_URL and OLLAMA_MODEL
 echo    - Set HOME_BASE_ADDRESS
 echo    - Set ORS_API_KEY (optional, for routing^)

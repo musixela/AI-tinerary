@@ -1,0 +1,25 @@
+# ==========================================
+# AI-TINERARY MASTER CONFIGURATION
+# Edit this file directly to control the Python pipeline.
+# It uses dotenv format, so exported variables will be read by
+# the main script. No need to copy it anywhere – changes take
+# effect immediately the next time you run `python AI-tinerary`.
+#
+# NOTE: the setup script will create this file if it is missing,
+# populating it with defaults you can tweak.
+# ==========================================
+
+# Home base for mileage estimation (Required)
+HOME_BASE_ADDRESS="123 Main Street, Anytown, USA 12345"
+
+# OpenRouteService API Key for mileage (Optional but recommended)
+# Get a free key at: https://openrouteservice.org/
+ORS_API_KEY=""
+
+# Ollama Settings (Local AI)
+OLLAMA_URL="http://localhost:11434/api/generate"
+OLLAMA_MODEL="ministral-3:3b"
+
+# Processing Settings
+# Number of files to process simultaneously
+MAX_THREADS=4
