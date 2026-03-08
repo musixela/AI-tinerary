@@ -70,33 +70,31 @@ if [ ! -f "$PROJECT_DIR/Master Config.txt" ]; then
 # AI-tinerary Master Configuration
 # Edit this file to control the Python scripts.  It uses dotenv format.
 
-# Ollama Settings
-OLLAMA_URL=http://localhost:11434/api/generate
-OLLAMA_MODEL=ministral-3:3b
-
 # Home Base Address (where the band departs from)
-HOME_BASE_ADDRESS=Johnson City, TN, United States
+HOME_BASE_ADDRESS=""
 
 # OpenRouteService configuration (optional).
 # - ORS_API_KEY: public key from https://openrouteservice.org/
-# - ORS_BASE_URL: URL of a self‑hosted container (e.g. http://localhost:8080/ors/v2)
-ORS_API_KEY=your_api_key_here
-ORS_BASE_URL=
+# - ORS_BASE_URL: URL of a self‑hosted container (e.g. http://localhost:8080/ors)
+ORS_API_KEY=""
+ORS_BASE_URL=""
+
+# Ollama Settings
+OLLAMA_URL="http://localhost:11434/api/generate"
+OLLAMA_MODEL="ministral-3:3b"
 
 # Processing
 MAX_THREADS=4
 
 # Discord Bot (optional)
-# Generate a bot application and paste the token here so the bot can
-# interact with your CSV files and calendar.
-DISCORD_BOT_TOKEN=your_discord_token_here
+# Generate a bot application and paste the token here.
+DISCORD_BOT_TOKEN=""
 
 # Google Calendar configuration
 # Provide the path to your service account JSON and the calendar IDs
-# for the band's internal calendar and the public calendar.
-GOOGLE_SERVICE_ACCOUNT_FILE=path/to/credentials.json
-BAND_CALENDAR_ID=your_band_calendar_id@group.calendar.google.com
-PUBLIC_CALENDAR_ID=your_public_calendar_id@group.calendar.google.com
+GOOGLE_SERVICE_ACCOUNT_FILE=""
+BAND_CALENDAR_ID=""
+PUBLIC_CALENDAR_ID=""
 EOF
     echo "✓ Master Config.txt template created (edit with your settings)"
 else

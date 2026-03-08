@@ -87,23 +87,33 @@ if not exist "%PROJECT_DIR%\Master Config.txt" (
     echo Creating Master Config.txt file (template)...
     (
         echo # AI-tinerary Master Configuration
-        echo # Edit this file to control the Python scripts
+        echo # Edit this file to control the Python scripts.  It uses dotenv format.
+        echo.
+        echo # Home Base Address (where the band departs from^)
+        echo HOME_BASE_ADDRESS=
+        echo.
+        echo # OpenRouteService configuration (optional^)
+        echo #   ORS_API_KEY=public key from https://openrouteservice.org/
+        echo #   ORS_BASE_URL=http://localhost:8080/ors
+        echo ORS_API_KEY=
+        echo ORS_BASE_URL=
         echo.
         echo # Ollama Settings
         echo OLLAMA_URL=http://localhost:11434/api/generate
         echo OLLAMA_MODEL=ministral-3:3b
         echo.
-        echo # Home Base Address (where the band departs from^)
-        echo HOME_BASE_ADDRESS=Johnson City, TN, United States
-        echo.
-        echo # OpenRouteService configuration (optional)
-        echo #   ORS_API_KEY=your_api_key_here  (public key)
-        echo #   ORS_BASE_URL=http://localhost:8080/ors/v2  (self‑hosted container)
-        echo ORS_API_KEY=your_api_key_here
-        echo ORS_BASE_URL=
-        echo.
         echo # Processing
         echo MAX_THREADS=4
+        echo.
+        echo # Discord Bot (optional^)
+        echo # Generate a bot application and paste the token here.
+        echo DISCORD_BOT_TOKEN=
+        echo.
+        echo # Google Calendar configuration
+        echo # Provide the path to your service account JSON and the calendar IDs
+        echo GOOGLE_SERVICE_ACCOUNT_FILE=
+        echo BAND_CALENDAR_ID=
+        echo PUBLIC_CALENDAR_ID=
     ) > "%PROJECT_DIR%\Master Config.txt"
     echo [OK] Master Config.txt template created (edit with your settings^)
 ) else (
