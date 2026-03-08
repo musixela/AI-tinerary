@@ -48,14 +48,32 @@ cd AI-tinerary
 setup.bat
 ```
 
-### 2. Configuration (`Master Config.txt`)
+### 2. Configuration (`Master Config.txt` & Google Scripts)
 
-All settings are managed via `Master Config.txt`. Key sections include:
-
+#### Python Backend
+All local settings are managed via `Master Config.txt`. Key sections include:
 - **AI:** `OLLAMA_URL`, `OLLAMA_MODEL`.
 - **Logistics:** `HOME_BASE_ADDRESS`, `ORS_API_KEY`.
 - **Discord:** `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`.
 - **Google:** `GOOGLE_SERVICE_ACCOUNT_FILE`, `BAND_CALENDAR_ID`, `PUBLIC_CALENDAR_ID`.
+- **Timezone:** `TIMEZONE` (e.g., `America/New_York`).
+
+#### Google Apps Scripts (Automation)
+Two scripts in `google_scripts/` handle external automation. To use them, create a new project at [script.google.com](https://script.google.com/) and paste the contents:
+
+**A. Gmail Ingestion (`AI-tinerary-EMEX.gs`):**
+- **Purpose:** Automatically pulls contract attachments from Gmail into your Google Drive (which should be synced locally to `Contracts/Incoming`).
+- **Setup:** 
+    - Set `SOURCE_LABEL_NAME` (e.g., "Confirmed Shows").
+    - Set `INCOMING_DRIVE_FOLDER_ID` and `COMPLETE_DRIVE_FOLDER_ID`.
+    - Create a time-based trigger for `saveConfirmedShowsAttachmentsToDrive`.
+
+**B. Sheets Synchronization (`AI-tinerary-SHSY.gs`):**
+- **Purpose:** Syncs your `master-output.csv` from Google Drive into a formatted Google Sheet for easy viewing by the whole band.
+- **Setup:**
+    - Set `SYNC_DRIVE_FOLDER_ID` (where your master CSV lives).
+    - Set `TARGET_SPREADSHEET_ID` (the ID of your Google Sheet).
+    - Create a time-based trigger for `syncMasterToSheets`.
 
 ### 3. External Services
 - **Ollama:** Must be running locally (`ollama serve`).
