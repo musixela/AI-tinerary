@@ -15,6 +15,8 @@ import json
 import logging
 import asyncio
 import difflib
+import shutil
+import importlib.util
 from pathlib import Path
 from datetime import datetime, timedelta
 
