@@ -4,11 +4,12 @@ pypdf==4.1.0
 # API interactions
 requests==2.31.0
 openrouteservice>=2.3.0
+geopy==2.4.1
 
 # Configuration and Validation
 python-dotenv==1.0.1
 pydantic==2.6.3
-...
+
 # Discord bot support
 # discord.py requires Python3.8+ and uses an async API
 discord.py==2.7.1

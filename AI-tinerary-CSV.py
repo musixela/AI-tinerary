@@ -25,7 +25,8 @@ from pypdf import PdfReader
 import openrouteservice
 from geopy.geocoders import Nominatim
 from geopy.exc import GeopyError
-from pydantic import BaseModel, Field, ValidationError
+from geopy.distance import geodesic
+from pydantic import BaseModel, Field, ValidationError, ConfigDict
 from dotenv import load_dotenv
 
 # ------------- CONFIGURATION & SETUP -------------
@@ -40,8 +41,8 @@ logger = logging.getLogger(__name__)
 ROOT_DIR = Path(__file__).resolve().parent
 CONTRACTS_DIR = ROOT_DIR / "Contracts" / "Incoming"
 OUTPUTS_DIR = ROOT_DIR / "Outputs"
+BITS_DIR = OUTPUTS_DIR / "Bits"
 COMPLETE_DIR = ROOT_DIR / "Contracts" / "Complete"
-MASTER_CSV = OUTPUTS_DIR / "master-output.csv"
 
 # Load Master Config.txt with absolute priority
 config_file = ROOT_DIR / "Master Config.txt"
@@ -73,6 +74,8 @@ geolocator = Nominatim(user_agent="ai-tinerary-tour-manager")
 
 class ContractData(BaseModel):
     """Pydantic model to strictly enforce the output schema and defaults."""
+    model_config = ConfigDict(populate_by_name=True)
+
     starting_date: str = Field(default="", alias="Starting Date")
     ending_date: str = Field(default="", alias="Ending Date")
     venue: str = Field(default="", alias="Venue")
@@ -97,9 +100,6 @@ class ContractData(BaseModel):
     sound_system: str = Field(default="", alias="Sound - System")
     other_expenses: str = Field(default="", alias="Other Expenses")
 
-    class Config:
-        populate_by_name = True
-
 CSV_HEADERS = [ContractData.model_fields[k].alias or k for k in ContractData.model_fields.keys()]
 
 # ------------- SERVICES & LOGIC -------------
@@ -119,27 +119,40 @@ def get_coords(address: str):
     return None
 
 def get_driving_miles(dest_coords, origin_coords):
-    """Get driving distance from ORS (Public or Local)."""
+    """Get driving distance from ORS (Public or Local). Fallback to straight-line distance if ORS fails."""
     if not dest_coords or not origin_coords: return ""
     
-    # Priority Logic: If API Key exists, ignore local URL.
+    # Try ORS first
     kwargs = {"key": ORS_API_KEY}
     if not ORS_API_KEY and ORS_BASE_URL:
         kwargs["base_url"] = ORS_BASE_URL
-        
-    client = openrouteservice.Client(**kwargs)
     
+    # Only try ORS if we have a key or a local URL
+    if ORS_API_KEY or ORS_BASE_URL:
+        try:
+            client = openrouteservice.Client(**kwargs)
+            route = client.directions(
+                coordinates=[origin_coords, dest_coords],
+                profile="driving-car",
+                format="json",
+                radiuses=[5000, 5000]
+            )
+            meters = route["routes"][0]["summary"]["distance"]
+            return f"{(meters / 1609.34):.2f}"
+        except Exception as e:
+            logger.error(f"ORS Routing failed: {e}")
+    
+    # Fallback to geodesic (straight-line) distance
     try:
-        route = client.directions(
-            coordinates=[origin_coords, dest_coords],
-            profile="driving-car",
-            format="json",
-            radiuses=[5000, 5000]
-        )
-        meters = route["routes"][0]["summary"]["distance"]
-        return f"{(meters / 1609.34):.2f}"
+        # geodesic takes (lat, lon)
+        dist_miles = geodesic((origin_coords[1], origin_coords[0]), (dest_coords[1], dest_coords[0])).miles
+        # Add 25% for estimated driving distance overhead
+        est_driving = dist_miles * 1.25
+        logger.info(f"Mileage fallback (Geodesic + 25%): {est_driving:.2f} miles")
+        return f"{est_driving:.2f}"
     except Exception as e:
-        logger.error(f"ORS Routing failed: {e}")
+        logger.error(f"Geodesic fallback failed: {e}")
+    
     return ""
 
 def process_mileage(data: ContractData):
@@ -169,7 +182,7 @@ def process_mileage(data: ContractData):
     else:
         logger.warning("Mileage skipped: Destination not found.")
 
-def call_ollama(text: str) -> ContractData:
+def call_ollama_extract(text: str) -> ContractData:
     """Extract show data via local AI with strict formatting."""
     system = f"""
 Extract tour contract details into a JSON object with these EXACT keys: {json.dumps(CSV_HEADERS)}.
@@ -209,13 +222,13 @@ def process_group(prefix, paths):
                         full_text += f"{msg['subject']}\n{body.get_content()}"
 
         # 2. AI Extract
-        data = call_ollama(full_text)
+        data = call_ollama_extract(full_text)
         
         # 3. Mileage
         process_mileage(data)
         
-        # 4. Save
-        csv_path = OUTPUTS_DIR / f"{prefix}.csv"
+        # 4. Save to Bits
+        csv_path = BITS_DIR / f"{prefix}.csv"
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
             writer.writeheader()
@@ -230,36 +243,15 @@ def process_group(prefix, paths):
         logger.error(f"Failed to process {prefix}: {e}")
         return False
 
-def combine_csvs():
-    logger.info("Combining outputs...")
-    csv_paths = sorted([p for p in OUTPUTS_DIR.glob("*.csv") if not p.name.startswith("master")])
-    if not csv_paths: return
-    
-    rows = []
-    headers = set()
-    for p in csv_paths:
-        try:
-            with open(p, "r", newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                headers.update(reader.fieldnames)
-                rows.extend(list(reader))
-        except Exception as e:
-            logger.error(f"Failed to read {p.name} for combine: {e}")
-            
-    with open(MASTER_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=sorted(headers))
-        writer.writeheader()
-        writer.writerows(rows)
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--update-mileage", action="store_true")
     args = parser.parse_args()
 
-    for d in [CONTRACTS_DIR, OUTPUTS_DIR, COMPLETE_DIR]: d.mkdir(parents=True, exist_ok=True)
+    for d in [CONTRACTS_DIR, OUTPUTS_DIR, BITS_DIR, COMPLETE_DIR]: d.mkdir(parents=True, exist_ok=True)
 
     if args.update_mileage:
-        csv_paths = [p for p in OUTPUTS_DIR.glob("*.csv") if not p.name.startswith("master")]
+        csv_paths = list(BITS_DIR.glob("*.csv"))
         for p in csv_paths:
             rows = []
             try:
@@ -299,8 +291,6 @@ def main():
         # Simple loop for clarity during testing
         for pref, paths in groups.items():
             process_group(pref, paths)
-
-    combine_csvs()
 
 if __name__ == "__main__":
     main()

@@ -108,6 +108,7 @@ if not exist "%PROJECT_DIR%\Master Config.txt" (
         echo # Discord Bot (optional^)
         echo # Generate a bot application and paste the token here.
         echo DISCORD_BOT_TOKEN=
+        echo DISCORD_CHANNEL_ID=
         echo.
         echo # Google Calendar configuration
         echo # Provide the path to your service account JSON and the calendar IDs
@@ -137,8 +138,9 @@ echo.
 echo 3. To activate the environment in the future:
 echo    .venv\Scripts\activate
 echo.
-echo 4. Run the script:
-echo    python AI-tinerary
+echo 4. Run the scripts:
+echo    python AI-tinerary-CSV.py    # To process contracts
+echo    python AI-tinerary-CALBOT.py # To start the Discord bot
 echo.
 echo For more info, see README.md
 echo.

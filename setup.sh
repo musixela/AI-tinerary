@@ -89,6 +89,7 @@ MAX_THREADS=4
 # Discord Bot (optional)
 # Generate a bot application and paste the token here.
 DISCORD_BOT_TOKEN=""
+DISCORD_CHANNEL_ID=""
 
 # Google Calendar configuration
 # Provide the path to your service account JSON and the calendar IDs
@@ -118,7 +119,8 @@ echo ""
 echo "3. To activate the environment in the future:"
 echo "   source .venv/bin/activate"
 echo ""
-echo "4. Run the script:"
-echo "   python AI-tinerary"
+echo "4. Run the scripts:"
+echo "   python AI-tinerary-CSV.py    # To process contracts"
+echo "   python AI-tinerary-CALBOT.py # To start the Discord bot"
 echo ""
 echo "For more info, see README.md"

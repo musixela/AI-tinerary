@@ -10,7 +10,7 @@
 # ==========================================
 
 # Home base for mileage estimation (Required)
-HOME_BASE_ADDRESS=""
+HOME_BASE_ADDRESS="Johnson City, TN, United States"
 
 # OpenRouteService settings (optional)
 # You can provide a public API key or point at a local container.  The
@@ -34,6 +34,7 @@ MAX_THREADS=4
 # core CSV extraction workflow, so you can leave it empty if you
 # don't plan to run the bot.
 DISCORD_BOT_TOKEN=""
+DISCORD_CHANNEL_ID=""
 
 # -----------------------------------------
 # Google Calendar integration
