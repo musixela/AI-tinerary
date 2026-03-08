@@ -8,8 +8,8 @@ var PROCESSED_LABEL_NAME = 'Confirmed Shows - Processed';
 // Drive folder ID that is synced locally to:
 // /code/Email Export/Contracts/Incoming
 // Example URL: https://drive.google.com/drive/folders/XXXXXXXX
-var INCOMING_DRIVE_FOLDER_ID = 'https://drive.google.com/drive/u/2/folders/1VqP8k5zHII5AcMV9oJJuBBuf7rXH2jzn';
-var COMPLETE_DRIVE_FOLDER_ID = 'https://drive.google.com/drive/u/2/folders/1ZgLrlcnlAZY9a1eHiz7P-a_OPj4KDPMt';
+var INCOMING_DRIVE_FOLDER_ID = 'PASTE_DRIVE_FOLDER_ID_HERE';
+var COMPLETE_DRIVE_FOLDER_ID = 'PASTE_DRIVE_FOLDER_ID_HERE';
 
 function saveConfirmedShowsAttachmentsToDrive() {
   var sourceLabel = GmailApp.getUserLabelByName(SOURCE_LABEL_NAME);
