@@ -594,9 +594,9 @@ class FinalizeView(discord.ui.View):
         if self.row.get("Calendar Created") != "True" or self.needs_calendar_update:
             cal_results = await asyncio.to_thread(create_calendar_events, self.row, self.needs_calendar_update)
         
-        # 5. Final Atomic Write (Task 1)
+        # 5. Final Atomic Write (Threaded)
         # Save enriched row (IDs, Routing, Mileage) once
-        result = update_master_csv(self.row, self.filepath.name)
+        result = await asyncio.to_thread(update_master_csv, self.row, self.filepath.name)
         
         # 6. Archive & Cleanup
         try:
@@ -815,11 +815,13 @@ async def watch_folder():
     if not channel: return
 
     found_new = False
-    # Read master rows for matching
-    master_rows = []
-    if MASTER_CSV.exists():
+    # Read master rows for matching (Threaded)
+    def read_master():
+        if not MASTER_CSV.exists(): return []
         with open(MASTER_CSV, "r", newline="", encoding="utf-8") as f:
-            master_rows = list(csv.DictReader(f))
+            return list(csv.DictReader(f))
+    
+    master_rows = await asyncio.to_thread(read_master)
 
     for csv_file in BITS_DIR.glob("*.csv"):
         if csv_file.name in notified_files:

@@ -175,8 +175,8 @@ async def plan_route_for_gig(gig, gigs):
     origin_coords = await get_coords(origin_address)
     dest_coords = await get_coords(dest_address, venue=dest_name, location=dest_loc)
     
-    # 3. Get Data
-    miles, duration = get_driving_data(dest_coords, origin_coords)
+    # 3. Get Data (Threaded)
+    miles, duration = await asyncio.to_thread(get_driving_data, dest_coords, origin_coords)
     
     if miles is not None:
         gig["Mileage"] = f"{miles:.2f}"
