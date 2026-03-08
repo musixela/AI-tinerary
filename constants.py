@@ -11,6 +11,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 OUTPUTS_DIR = ROOT_DIR / "Outputs"
 BITS_DIR = OUTPUTS_DIR / "Bits"
 PROCESSED_DIR = BITS_DIR / "Processed"
+ITINERARIES_DIR = OUTPUTS_DIR / "Itineraries"  # NEW: For TINNYBOT's Tour Packets
 MASTER_CSV = OUTPUTS_DIR / "master-output.csv"
 MASTER_CSV_LOCK = OUTPUTS_DIR / "master-output.csv.lock"
 STATE_FILE = OUTPUTS_DIR / "bot_state.json"
@@ -20,7 +21,7 @@ CONTRACTS_DIR = ROOT_DIR / "Contracts" / "Incoming"
 COMPLETE_DIR = ROOT_DIR / "Contracts" / "Complete"
 
 # Ensure directories exist
-for d in [PROCESSED_DIR, BACKUPS_DIR, LOGS_DIR, CONTRACTS_DIR, COMPLETE_DIR, OUTPUTS_DIR, BITS_DIR]:
+for d in [PROCESSED_DIR, BACKUPS_DIR, LOGS_DIR, CONTRACTS_DIR, COMPLETE_DIR, OUTPUTS_DIR, BITS_DIR, ITINERARIES_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ------------------------------------------------------------------

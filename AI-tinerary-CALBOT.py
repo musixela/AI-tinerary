@@ -692,12 +692,28 @@ async def run_review_process(thread: discord.Thread, filepath: Path, action_type
     await thread.send(embed=embed, view=FinalizeView(filepath, row, action_type, needs_cal))
 
 # ------------------------------------------------------------------
-# Bot Setup
+# Bot Setup & Cog Integration
 # ------------------------------------------------------------------
+
+class AItineraryBot(commands.Bot):
+    async def setup_hook(self):
+        # Dynamically load the TINNYBOT cog when the bot starts
+        try:
+            spec = importlib.util.spec_from_file_location("tinnybot", ROOT_DIR / "AI-tinerary-TINNYBOT.py")
+            tinny = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(tinny)
+            
+            # This calls the async setup(bot) function at the bottom of TINNYBOT
+            await tinny.setup(self)
+            logger.info("✅ TINNYBOT Cog successfully loaded.")
+        except Exception as e:
+            logger.error(f"❌ Failed to load TINNYBOT Cog: {e}")
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Initialize using our custom subclass
+bot = AItineraryBot(command_prefix="!", intents=intents)
 
 # Persistence logic
 notified_files = set()
