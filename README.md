@@ -126,6 +126,59 @@ Place your `.eml` or `.pdf` files into the `Contracts/Incoming/` directory.
 python AI-tinerary
 ```
 
+### 🤖 Discord Bot & Google Calendar Integration
+
+A companion Discord bot (`AI-tinerary-CALBOT.py`) can read the CSVs produced in `Outputs/`, ask you interactively to fill in missing fields, and optionally create events on two Google Calendars (a private band calendar and a public-facing calendar).
+
+To enable this feature you must:
+1. Add the following variables to `Master Config.txt` (or via environment):
+   ```ini
+   DISCORD_BOT_TOKEN=your_discord_bot_token
+   GOOGLE_SERVICE_ACCOUNT_FILE=/path/to/service-account.json
+   BAND_CALENDAR_ID=your_band_calendar_id@group.calendar.google.com
+   PUBLIC_CALENDAR_ID=your_public_calendar_id@group.calendar.google.com
+   ```
+2. Install the additional dependencies (they are already listed in `Dependencies.txt`).
+3. Run the bot script with:
+   ```bash
+   python AI-tinerary-CALBOT.py
+   ```
+
+Once the bot is online you can use the following text commands in any server or
+via DM with the bot:
+
+- `!fill [filename]` – the bot will read the specified CSV (or all CSVs if you
+  omit the filename), look for empty fields, and then start a conversa­tion in
+  your DMs.  You can simply describe the show in plain English and the AI will
+  attempt to populate as many blanks as possible; it will summarize its
+  findings, ask follow‑ups for information it still needs, and finally ask any
+  remaining specific questions until the sheet is complete.  This makes data
+  entry feel like chatting with an assistant rather than filling out a form.
+- `!event [filename]` – create calendar events based on the CSV row.  The bot will
+  ask for start/end datetimes if not already supplied (these can also be filled
+  during the `!fill` conversation).
+- `!setconfig KEY VALUE` – write a key/value pair into `Master Config.txt` so
+  you don’t have to open the file manually.
+
+The logic that determines which fields to ask about is entirely data-driven
+(`!fill` inspects the CSV to find blanks), so you can add new columns (for
+example `Calendar Start`/`Calendar End`) and the bot will automatically
+inquire about them without any code change.
+
+The bot also includes a little heuristic to convert whatever date/time info
+it gathers into ISO calendar datetimes.  That requires the `python-dateutil`
+package (now listed in `Dependencies.txt`) which is installed by the setup
+script.  If the AI has enough information it will pre‑fill `Calendar Start`
+and `Calendar End` automatically for you when the conversation ends.
+
+If you ever want to fine‑tune the phrasing or add extra fields, edit the
+`QUESTION_SCRIPT` list inside `AI-tinerary-CALBOT.py` as noted in the source
+comments; the conversational loop handles both automatic AI fills and explicit
+value prompts.
+
+---
+
+
 **Advanced CLI Commands:**
 ```bash
 python AI-tinerary --process-only  # Process files, but don't merge them

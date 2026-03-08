@@ -334,7 +334,13 @@ def process_single_file(file_path: Path):
     return True
 
 def combine_csvs():
-    """Combines all individual CSVs in Outputs into one master CSV."""
+    """Combines all individual CSVs in Outputs into one master CSV.
+
+    Unlike the original implementation, headers are discovered dynamically
+    from the CSV files currently in the folder.  This allows auxiliary
+    tools (e.g. the Discord bot) to add extra columns such as calendar
+    start/end times without breaking the merge step.
+    """
     logger.info("Combining CSV files...")
     csv_paths = [p for p in OUTPUTS_DIR.glob("*.csv") if not p.name.lower().startswith("master")]
     
@@ -342,19 +348,26 @@ def combine_csvs():
         logger.info("No CSV files to combine.")
         return
 
+    # gather all rows and headers
+    all_rows = []
+    headers = set()
+    for path in sorted(csv_paths):
+        with open(path, newline="", encoding="utf-8") as in_f:
+            reader = csv.DictReader(in_f)
+            if reader.fieldnames:
+                headers.update(reader.fieldnames)
+            for row in reader:
+                all_rows.append(row)
+
+    headers = sorted(headers)
+
     with open(MASTER_CSV, "w", newline="", encoding="utf-8") as out_f:
-        writer = csv.writer(out_f)
-        writer.writerow(CSV_HEADERS)
-        
-        for path in sorted(csv_paths):
-            with open(path, newline="", encoding="utf-8") as in_f:
-                reader = csv.reader(in_f)
-                try:
-                    next(reader) # Skip header
-                    for row in reader:
-                        writer.writerow(row)
-                except StopIteration:
-                    continue
+        writer = csv.DictWriter(out_f, fieldnames=headers)
+        writer.writeheader()
+        for row in all_rows:
+            # ensure all headers are present
+            out_row = {h: row.get(h, "") for h in headers}
+            writer.writerow(out_row)
 
     logger.info(f"Combined {len(csv_paths)} file(s) into {MASTER_CSV.name}")
 

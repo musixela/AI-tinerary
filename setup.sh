@@ -82,6 +82,18 @@ ORS_API_KEY=your_api_key_here
 
 # Processing
 MAX_THREADS=4
+
+# Discord Bot (optional)
+# Generate a bot application and paste the token here so the bot can
+# interact with your CSV files and calendar.
+DISCORD_BOT_TOKEN=your_discord_token_here
+
+# Google Calendar configuration
+# Provide the path to your service account JSON and the calendar IDs
+# for the band's internal calendar and the public calendar.
+GOOGLE_SERVICE_ACCOUNT_FILE=path/to/credentials.json
+BAND_CALENDAR_ID=your_band_calendar_id@group.calendar.google.com
+PUBLIC_CALENDAR_ID=your_public_calendar_id@group.calendar.google.com
 EOF
     echo "✓ Master Config.txt template created (edit with your settings)"
 else

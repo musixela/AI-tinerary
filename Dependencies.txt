@@ -1,0 +1,22 @@
+# Core PDF and Email handling
+pypdf==4.1.0
+
+# API interactions
+requests==2.31.0
+openrouteservice==3.0.0
+
+# Configuration and Validation
+python-dotenv==1.0.1
+pydantic==2.6.3
+
+# Discord bot support
+# discord.py requires Python3.8+ and uses an async API
+discord.py==2.7.1
+
+# Google Calendar API client libraries
+google-api-python-client==2.79.0
+google-auth-httplib2==0.1.0
+google-auth-oauthlib==1.0.0
+
+# date/time parsing for calendar inference
+python-dateutil==2.8.2
