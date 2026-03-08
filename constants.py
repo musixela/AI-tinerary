@@ -54,9 +54,12 @@ class ContractData(BaseModel):
     sound_person: str = Field(default="", alias="Sound - Person")
     sound_system: str = Field(default="", alias="Sound - System")
     other_expenses: str = Field(default="", alias="Other Expenses")
-    # Task 2: GCal Event Tracking
+    
+    # Task 2 & 3: Tracking IDs
     band_event_id: str = Field(default="", alias="Band Event ID")
     public_event_id: str = Field(default="", alias="Public Event ID")
+    travel_event_id: str = Field(default="", alias="Travel Event ID")
+    departure_time: str = Field(default="", alias="Departure Time")
 
 CSV_HEADERS = [ContractData.model_fields[k].alias or k for k in ContractData.model_fields.keys()]
 

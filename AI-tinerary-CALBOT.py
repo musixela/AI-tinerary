@@ -435,7 +435,7 @@ def infer_calendar_datetimes(row: dict):
 def create_calendar_events(row: dict, needs_update: bool = False):
     """
     Creates or updates events on configured calendars.
-    Uses events().update() if Event IDs are present.
+    Includes Travel Time blocking on Band Calendar.
     """
     if not GOOGLE_SERVICE_ACCOUNT_FILE:
         return ["⚠️ Google Calendar not configured (no service account)."]
@@ -484,6 +484,36 @@ def create_calendar_events(row: dict, needs_update: bool = False):
                 results.append(f"✅ Band Calendar Created: [Link]({e.get('htmlLink')})")
                 row["Band Event ID"] = e.get("id")
             row["Calendar Created"] = "True"
+
+            # Travel Blocking (Task 3)
+            dep_time = row.get("Departure Time")
+            if dep_time:
+                from dateutil import parser
+                travel_start = dep_time
+                # End of travel is either Load In or Calendar Start
+                travel_end = row.get("Calendar Start")
+                if row.get("Load In"):
+                    try:
+                        travel_end = parser.parse(f"{row.get('Starting Date')} {row.get('Load In')}").isoformat()
+                    except: pass
+                
+                travel_body = {
+                    "summary": f"🚗 Travel to {venue}",
+                    "description": f"Driving from previous location to {venue}.",
+                    "start": {"dateTime": travel_start, "timeZone": TIMEZONE},
+                    "end": {"dateTime": travel_end, "timeZone": TIMEZONE},
+                    "colorId": "5" # Yellow/Banana for travel
+                }
+                
+                t_event_id = row.get("Travel Event ID")
+                if t_event_id:
+                    service.events().update(calendarId=BAND_CALENDAR_ID, eventId=t_event_id, body=travel_body).execute()
+                    results.append("🚗 Travel block updated.")
+                else:
+                    te = service.events().insert(calendarId=BAND_CALENDAR_ID, body=travel_body).execute()
+                    row["Travel Event ID"] = te.get("id")
+                    results.append("🚗 Travel block created.")
+
         except Exception as e:
             results.append(f"❌ Band Cal Error: {e}")
             
@@ -542,36 +572,33 @@ class FinalizeView(discord.ui.View):
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         
-        # 1. Set Workflow State
+        # 1. State: Processed
         self.row["Discord Finished"] = "True"
         
-        # 2. Infer Dates
+        # 2. Date/Time Pre-Processing
         infer_calendar_datetimes(self.row)
         
-        # 3. Update Master CSV (Stage 4)
-        result = update_master_csv(self.row, self.filepath.name)
-        
-        # 4. MAPBOT Routing (New Stage)
+        # 3. MAPBOT Enrichment (Task 1 & 2)
         try:
             mapbot = get_mapbot_module()
             gigs = mapbot.get_sorted_gigs()
-            # Find the row in the sorted gigs and route it
-            for gig in gigs:
-                if gig.get("Starting Date") == self.row.get("Starting Date") and gig.get("Venue") == self.row.get("Venue"):
-                    if await mapbot.plan_route_for_gig(gig, gigs):
-                        mapbot.update_master_csv_atomic(gigs)
-                        await interaction.followup.send("🚚 MAPBOT: Routing and logistics calculated.")
-                    break
+            # Calculate route for THIS row and update self.row object
+            if await mapbot.plan_route_for_gig(self.row, gigs):
+                await interaction.followup.send("🚚 MAPBOT: Routing and logistics calculated.")
         except Exception as e:
-            logger.error(f"MAPBOT execution failed during finalize: {e}")
+            logger.error(f"MAPBOT enrichment failed: {e}")
 
-        # 5. Calendar (Stage 6)
-        # Only create if not already created OR if update needed
+        # 4. Google Calendar (Task 1 & 3)
+        # Create/Update events including the new Travel Block
         cal_results = []
         if self.row.get("Calendar Created") != "True" or self.needs_calendar_update:
             cal_results = await asyncio.to_thread(create_calendar_events, self.row, self.needs_calendar_update)
         
-        # 5. Archive
+        # 5. Final Atomic Write (Task 1)
+        # Save enriched row (IDs, Routing, Mileage) once
+        result = update_master_csv(self.row, self.filepath.name)
+        
+        # 6. Archive & Cleanup
         try:
             shutil.move(str(self.filepath), str(PROCESSED_DIR / self.filepath.name))
             archive_msg = "📂 File archived."
@@ -688,8 +715,10 @@ def load_state():
 
 def save_state():
     try:
-        with open(STATE_FILE, "w") as f:
+        temp_state = STATE_FILE.with_suffix(".tmp")
+        with open(temp_state, "w") as f:
             json.dump({"notified_files": list(notified_files)}, f)
+        temp_state.replace(STATE_FILE)
     except Exception as e:
         logger.error(f"Failed to save state: {e}")
 

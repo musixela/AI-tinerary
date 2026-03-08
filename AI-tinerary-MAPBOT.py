@@ -54,10 +54,10 @@ geolocator = Nominatim(user_agent="ai-tinerary-mapbot")
 # Routing Utilities (Ported/Enhanced from CSV Script)
 # ------------------------------------------------------------------
 
-def get_coords(address: str, venue: str = None, location: str = None):
+async def get_coords(address: str, venue: str = None, location: str = None):
     """
     Resolve an address to [longitude, latitude] using Nominatim.
-    Implements fallbacks for venue and location.
+    Implements fallbacks and rate-limiting (max 1 req/sec).
     """
     queries = []
     if address: queries.append(address)
@@ -67,6 +67,8 @@ def get_coords(address: str, venue: str = None, location: str = None):
     for query in queries:
         if not query or str(query).strip() == "": continue
         try:
+            # 1.1s sleep for Nominatim compliance (1 req/sec)
+            await asyncio.sleep(1.1)
             location_res = geolocator.geocode(query, timeout=10)
             if location_res:
                 logger.info(f"Resolved '{query}' to [{location_res.longitude}, {location_res.latitude}]")
@@ -170,8 +172,8 @@ async def plan_route_for_gig(gig, gigs):
     logger.info(f"Routing for {dest_name}: {origin_name} -> {dest_name}")
     
     # 2. Geocode with Fallbacks
-    origin_coords = get_coords(origin_address)
-    dest_coords = get_coords(dest_address, venue=dest_name, location=dest_loc)
+    origin_coords = await get_coords(origin_address)
+    dest_coords = await get_coords(dest_address, venue=dest_name, location=dest_loc)
     
     # 3. Get Data
     miles, duration = get_driving_data(dest_coords, origin_coords)
@@ -200,6 +202,9 @@ async def plan_route_for_gig(gig, gigs):
                 try:
                     load_in_time = parser.parse(f"{gig.get('Starting Date')} {load_in_str}")
                     departure_time = load_in_time - timedelta(seconds=total_duration_with_buffer)
+                    
+                    # Store structured Departure Time
+                    gig["Departure Time"] = departure_time.isoformat()
                     
                     # Check against prev gig end
                     if prev_gig:
@@ -250,17 +255,22 @@ def update_master_csv_atomic(rows):
 # ------------------------------------------------------------------
 
 # This will be called by AI-tinerary-CALBOT.py or run standalone
-if __name__ == "__main__":
+async def main_standalone():
     # Standalone mode: Process all pending gigs
     gigs = get_sorted_gigs()
     updated = False
     for gig in gigs:
         if not gig.get("Routing") or not gig.get("Mileage"):
-            if asyncio.run(plan_route_for_gig(gig, gigs)):
+            if await plan_route_for_gig(gig, gigs):
                 updated = True
+            # Extra buffer between gigs for Nominatim ToS compliance
+            await asyncio.sleep(1.1)
     
     if updated:
         update_master_csv_atomic(gigs)
         print("MAPBOT: Routing updates complete.")
     else:
         print("MAPBOT: No pending routing found.")
+
+if __name__ == "__main__":
+    asyncio.run(main_standalone())
