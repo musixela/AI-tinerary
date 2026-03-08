@@ -96,8 +96,11 @@ if not exist "%PROJECT_DIR%\Master Config.txt" (
         echo # Home Base Address (where the band departs from^)
         echo HOME_BASE_ADDRESS=Johnson City, TN, United States
         echo.
-        echo # OpenRouteService API Key (get one at https://openrouteservice.org^)
+        echo # OpenRouteService configuration (optional)
+        echo #   ORS_API_KEY=your_api_key_here  (public key)
+        echo #   ORS_BASE_URL=http://localhost:8080/ors/v2  (self‑hosted container)
         echo ORS_API_KEY=your_api_key_here
+        echo ORS_BASE_URL=
         echo.
         echo # Processing
         echo MAX_THREADS=4
@@ -116,7 +119,7 @@ echo Next steps:
 echo 1. Edit Master Config.txt with your configuration:
 echo    - Set OLLAMA_URL and OLLAMA_MODEL
 echo    - Set HOME_BASE_ADDRESS
-echo    - Set ORS_API_KEY (optional, for routing^)
+echo    - Set ORS_API_KEY or ORS_BASE_URL (optional, for routing^)
 echo.
 echo 2. Make sure Ollama is running:
 echo    ollama serve

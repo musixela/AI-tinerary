@@ -2,37 +2,34 @@
 """
 AI-tinerary: Advanced Contract Processing Pipeline
 
-Stack:
+Stack (Best Free Industry Practice):
 - Ollama (local model) for contract parsing.
-- openrouteservice (FOSS routing engine) for driving mileage.
+- geopy (Nominatim) for free, high-quality Geocoding.
+- openrouteservice (Local container or Public API) for driving distance & ETAs.
 - Pydantic for strict schema validation.
-- ThreadPoolExecutor for parallel processing.
 """
 
 import csv
 import json
 import logging
 import argparse
+import os
 from pathlib import Path
 from io import BytesIO
 from email import policy
 from email.parser import BytesParser
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 
 import requests
 from pypdf import PdfReader
 import openrouteservice
+from geopy.geocoders import Nominatim
+from geopy.exc import GeopyError
 from pydantic import BaseModel, Field, ValidationError
 from dotenv import load_dotenv
-import os
 
 # ------------- CONFIGURATION & SETUP -------------
 
-# NOTE: ROOT_DIR is defined further down, so loading dotenv must wait until
-# after we compute it.  We'll call this after the path variables block below.
-
-# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -40,25 +37,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Project Paths
 ROOT_DIR = Path(__file__).resolve().parent
 CONTRACTS_DIR = ROOT_DIR / "Contracts" / "Incoming"
 OUTPUTS_DIR = ROOT_DIR / "Outputs"
 COMPLETE_DIR = ROOT_DIR / "Contracts" / "Complete"
 MASTER_CSV = OUTPUTS_DIR / "master-output.csv"
 
-# Load configuration from the master file (`Master Config.txt`) then fallback to
-# a conventional `.env` if present.  Doing this here ensures ROOT_DIR is
-# already defined.
-load_dotenv(dotenv_path=ROOT_DIR / "Master Config.txt")
-load_dotenv()
+# Load Master Config.txt with absolute priority
+config_file = ROOT_DIR / "Master Config.txt"
+if config_file.exists():
+    logger.info(f"Loading Master Config from {config_file}")
+    load_dotenv(dotenv_path=config_file, override=True)
+else:
+    load_dotenv(override=True)
 
 # Env Vars
-HOME_BASE_ADDRESS = os.getenv("HOME_BASE_ADDRESS", "Johnson City, TN, United States")
+HOME_BASE_ADDRESS = os.getenv("HOME_BASE_ADDRESS", "")
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
+ORS_BASE_URL = os.getenv("ORS_BASE_URL", "")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b")
-MAX_THREADS = int(os.getenv("MAX_THREADS", 4))
+
+# Explicit Routing Mode Logging
+if ORS_API_KEY:
+    logger.info("ROUTING MODE: Public API (Full US Maps enabled)")
+else:
+    logger.info(f"ROUTING MODE: Local Docker at {ORS_BASE_URL or 'http://localhost:8080'}")
+
+logger.info(f"HOME_BASE: '{HOME_BASE_ADDRESS}'")
+
+# Initialize Geocoder
+geolocator = Nominatim(user_agent="ai-tinerary-tour-manager")
 
 # ------------- SCHEMA VALIDATION -------------
 
@@ -77,7 +86,7 @@ class ContractData(BaseModel):
     contact_details: str = Field(default="", alias="Contact Details")
     other_details: str = Field(default="", alias="Other Details")
     address: str = Field(default="", alias="Address")
-    accommodations: str = Field(default="", alias="Accomodations") # Keeping typo from original sheet
+    accommodations: str = Field(default="", alias="Accomodations")
     accom_address: str = Field(default="", alias="Accom Address")
     est_mileage: str = Field(default="", alias="Est. Mileage")
     time: str = Field(default="", alias="Time")
@@ -91,400 +100,207 @@ class ContractData(BaseModel):
     class Config:
         populate_by_name = True
 
-SHEET_COLUMNS = list(ContractData.model_fields.keys())
-# Map attribute names back to original CSV aliases for writing
-CSV_HEADERS = [ContractData.model_fields[k].alias or k for k in SHEET_COLUMNS]
+CSV_HEADERS = [ContractData.model_fields[k].alias or k for k in ContractData.model_fields.keys()]
 
+# ------------- SERVICES & LOGIC -------------
 
-# ------------- TEXT EXTRACTION -------------
-
-def read_pdf_bytes_text(pdf_bytes: bytes) -> str:
-    reader = PdfReader(BytesIO(pdf_bytes))
-    return "\n\n".join(page.extract_text() or "" for page in reader.pages)
-
-def read_file_text(file_path: Path) -> str:
-    """Extracts text from PDF or EML appropriately."""
-    if file_path.suffix.lower() == ".pdf":
-        return read_pdf_bytes_text(file_path.read_bytes())
-    
-    # EML Processing
-    with open(file_path, "rb") as f:
-        msg = BytesParser(policy=policy.default).parse(f)
-
-    parts = [
-        f"Subject: {msg['subject'] or ''}\nFrom: {msg['from'] or ''}\nDate: {msg['date'] or ''}"
-    ]
-
-    body = msg.get_body(preferencelist=("plain", "html"))
-    if body:
-        try:
-            parts.append(body.get_content())
-        except Exception:
-            pass
-
-    for attachment in msg.iter_attachments():
-        filename = attachment.get_filename() or ""
-        if attachment.get_content_type() == "application/pdf" or filename.lower().endswith(".pdf"):
-            try:
-                parts.append(read_pdf_bytes_text(attachment.get_content()))
-            except Exception as e:
-                logger.warning(f"Could not read attachment {filename}: {e}")
-
-    return "\n\n".join(parts)
-
-
-# ------------- AI & API SERVICES -------------
-
-def call_ollama_extract(contract_text: str) -> ContractData:
-    """Calls Ollama and maps the output securely to the Pydantic model."""
-    system_instructions = f"""
-You are helping a band ingest show contracts into a structured spreadsheet.
-
-The band always departs from this fixed home base:
-"{HOME_BASE_ADDRESS}"
-
-The input text may be:
-- A contract PDF converted to text
-- An email offer / confirmation
-- An email that also includes attached PDFs
-
-You must consider ALL of this text together to infer the show details.
-
-You must output a single JSON OBJECT with EXACTLY these keys
-(spelling and capitalization must match exactly):
-
-{json.dumps(SHEET_COLUMNS, indent=2)}
-
-Rules for values:
-- If you can infer a value from the contract/email, fill it.
-- If you CANNOT infer the value, set it to an empty string "".
-- NEVER omit a key.
-- NEVER use null, None, true, false, numbers, or any non-string type.
-- All values must be JSON strings (the CSV is purely text).
-
-Field meanings and formatting (examples based on a typical contract) [file:98][file:181]:
-
-- "Starting Date":
-  - First performance date covered by the contract or email.
-  - Prefer US M/D format with no leading zero and no year, e.g. "5/8" for May 8th, 2026.
-  - If multiple dates are given, use the earliest one.
-
-- "Ending Date":
-  - Last performance date covered by the contract/email.
-  - If it is a single-date show, set this to "".
-  - For multi‑day runs or festivals with a clear date range, put the final date in the same M/D style, e.g. "5/10".
-
-- "Venue":
-  - Name of the physical venue or location, e.g. "Downtown Commons".
-  - If there's a series name plus a place (e.g. "SAILS Original Music Series – downtown commons - Hickory, NC"),
-    use the place as Venue ("Downtown Commons") and mention the series in "Other Details".
-
-- "Location":
-  - City and state in one string, like "Hickory, NC".
-
-- "Booking":
-  - "TRUE" if there is a booking contact / talent buyer / booking agent clearly specified
-    (in the email or contract).
-  - Otherwise "FALSE".
-
-- "MGMT":
-  - "TRUE" if there is a manager or management company mentioned.
-  - Otherwise "FALSE".
-
-- "Door Deal":
-  - "TRUE" if pay is described as a door deal or percentage of ticket sales
-    (e.g. "60% of door", "70/30 split").
-  - "FALSE" if it is a flat guarantee only.
-
-- "DD Notes":
-  - Extra notes related to the door deal if present (minimums, caps, splits).
-  - Otherwise "".
-
-- "Hospitality":
-  - Food, drinks, and hospitality in short sentences.
-  - Example: "Food: Healthy snacks provided pre-show. Drinks: N/A".
-
-- "Contact Name":
-  - Name of the main day-of-show contact or primary email sign‑off person.
-  - Example: "Bob Sinclair".
-
-- "Contact Details":
-  - Contact methods (phone, email) in one string.
-  - Example: "828.320.4131, bobsinclairmusic@gmail.com".
-
-- "Other Details":
-  - Any other clauses or notes useful to the band:
-    radius clauses, series names, weather plan, press info, parking notes, etc.
-
-- "Address":
-  - Best available full street address of the venue, including city, state, and zip if present.
-  - Example: "238 Union Square NW, Hickory, NC 28601".
-
-- "Accomodations":
-  - Short description of lodging arrangements such as number/type of rooms.
-  - Example: "4 double rooms".
-
-- "Accom Address":
-  - Full address of the lodging/hotel if it is clearly specified anywhere.
-  - Otherwise "".
-
-- "Est. Mileage":
-  - Leave as "" (this will be filled later by a routing API, not by you).
-
-- "Time":
-  - Main show start time as it appears, e.g. "7:00 PM".
-
-- "Doors":
-  - Door time if specified, e.g. "6:30 PM".
-  - Else "".
-
-- "Load In":
-  - Load-in time, e.g. "4:30 PM".
-
-- "Pay":
-  - Guaranteed fee or pay terms, as a string with currency formatting if obvious.
-  - Example: "$950.00".
-
-- "Sound - Person":
-  - Sound tech person or company if clearly specified.
-  - Otherwise "".
-
-- "Sound - System":
-  - Short description of PA, such as "Provided", "House PA", "None", etc.
-
-- "Other Expenses":
-  - Any clearly specified extra expenses the band must pay (parking fees, marketing fees).
-  - Otherwise "".
-
-Return ONLY the JSON object. Do NOT wrap it in markdown, do NOT add explanations.
-"""
+def get_coords(address: str):
+    """Resolve an address to [longitude, latitude] using Nominatim."""
+    if not address: return None
     try:
-        resp = requests.post(
-            OLLAMA_URL, 
-            json={"model": OLLAMA_MODEL, "prompt": system_instructions + "\n\nTEXT:\n" + contract_text, "stream": False, "format": "json"}, 
-            timeout=180
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        
-        # Parse output securely through Pydantic
-        raw_json = json.loads(data.get("response", "{}"))
-        return ContractData(**raw_json)
-        
-    except (requests.RequestException, json.JSONDecodeError, ValidationError) as e:
-        logger.error(f"AI Extraction failed. Returning empty struct. Error: {e}")
-        return ContractData() # Returns all empty defaults
-
-def get_driving_distance_miles(dest_addr: str) -> str:
-    """Calculate driving distance using OpenRouteService."""
-    if not ORS_API_KEY or not dest_addr:
-        return ""
-
-    client = openrouteservice.Client(key=ORS_API_KEY)
-    try:
-        # Geocode origin and destination
-        origin = client.pelias_search(text=HOME_BASE_ADDRESS, size=1)["features"][0]["geometry"]["coordinates"]
-        dest = client.pelias_search(text=dest_addr, size=1)["features"][0]["geometry"]["coordinates"]
-        
-        # Route
-        route = client.directions(coordinates=[origin, dest], profile="driving-car", format="json")
-        miles = route["routes"][0]["summary"]["distance"] / 1609.34
-        return f"{miles:.2f}"
+        location = geolocator.geocode(address, timeout=10)
+        if location:
+            logger.info(f"Resolved '{address}' to [{location.longitude}, {location.latitude}]")
+            return [location.longitude, location.latitude]
+        else:
+            logger.warning(f"Could not resolve address: '{address}'")
     except Exception as e:
-        logger.warning(f"Routing failed for '{dest_addr}': {e}")
-        return ""
+        logger.error(f"Geocoding error for '{address}': {e}")
+    return None
 
-# ------------- WORKFLOW LOGIC -------------
-
-def process_single_file(file_path: Path):
-    """Process a single document from start to finish."""
-    logger.info(f"Processing: {file_path.name}")
+def get_driving_miles(dest_coords, origin_coords):
+    """Get driving distance from ORS (Public or Local)."""
+    if not dest_coords or not origin_coords: return ""
     
-    # 1. Extract Text
-    text = read_file_text(file_path)
-    if not text.strip():
-        logger.warning(f"No text found in {file_path.name}, skipping.")
-        return False
-
-    # 2. AI Extraction
-    extracted_data = call_ollama_extract(text)
-    
-    # 3. Post-process (Booleans & Mileage)
-    for attr in ['booking', 'mgmt', 'door_deal']:
-        val = getattr(extracted_data, attr).strip().upper()
-        setattr(extracted_data, attr, "TRUE" if val in ("TRUE", "YES", "Y", "1") else "FALSE")
-    
-    dest_addr = extracted_data.address or (f"{extracted_data.venue}, {extracted_data.location}" if extracted_data.location else "")
-    if dest_addr:
-        extracted_data.est_mileage = get_driving_distance_miles(dest_addr)
-    
-    if not extracted_data.venue:
-        extracted_data.venue = file_path.stem
-
-    # 4. Save to CSV
-    csv_path = OUTPUTS_DIR / f"{file_path.stem}.csv"
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-        writer.writeheader()
-        writer.writerow(extracted_data.model_dump(by_alias=True))
+    # Priority Logic: If API Key exists, ignore local URL.
+    kwargs = {"key": ORS_API_KEY}
+    if not ORS_API_KEY and ORS_BASE_URL:
+        kwargs["base_url"] = ORS_BASE_URL
         
-    # 5. Archive
-    file_path.rename(COMPLETE_DIR / file_path.name)
-    logger.info(f"Successfully processed and archived {file_path.name}")
-    return True
-
-def combine_csvs():
-    """Combines all individual CSVs in Outputs into one master CSV.
-
-    Unlike the original implementation, headers are discovered dynamically
-    from the CSV files currently in the folder.  This allows auxiliary
-    tools (e.g. the Discord bot) to add extra columns such as calendar
-    start/end times without breaking the merge step.
-    """
-    logger.info("Combining CSV files...")
-    csv_paths = [p for p in OUTPUTS_DIR.glob("*.csv") if not p.name.lower().startswith("master")]
+    client = openrouteservice.Client(**kwargs)
     
-    if not csv_paths:
-        logger.info("No CSV files to combine.")
+    try:
+        route = client.directions(
+            coordinates=[origin_coords, dest_coords],
+            profile="driving-car",
+            format="json",
+            radiuses=[5000, 5000]
+        )
+        meters = route["routes"][0]["summary"]["distance"]
+        return f"{(meters / 1609.34):.2f}"
+    except Exception as e:
+        logger.error(f"ORS Routing failed: {e}")
+    return ""
+
+def process_mileage(data: ContractData):
+    """Coordinate the Geocoding and Routing workflow with fallbacks."""
+    # 1. Resolve Home Base
+    origin_coords = get_coords(HOME_BASE_ADDRESS)
+    if not origin_coords:
+        logger.warning("Mileage skipped: Home Base not found.")
         return
 
-    # gather all rows and headers
-    all_rows = []
-    headers = set()
-    for path in sorted(csv_paths):
-        with open(path, newline="", encoding="utf-8") as in_f:
-            reader = csv.DictReader(in_f)
-            if reader.fieldnames:
-                headers.update(reader.fieldnames)
-            for row in reader:
-                all_rows.append(row)
+    # 2. Resolve Destination (Try multiple search strategies)
+    dest_coords = None
+    search_queries = [
+        data.address,
+        data.location,
+        f"{data.venue}, {data.location}" if data.location else None
+    ]
+    
+    for query in search_queries:
+        if not query: continue
+        dest_coords = get_coords(query)
+        if dest_coords: break
+    
+    # 3. Get Distance
+    if dest_coords:
+        data.est_mileage = get_driving_miles(dest_coords, origin_coords)
+    else:
+        logger.warning("Mileage skipped: Destination not found.")
 
-    headers = sorted(headers)
+def call_ollama(text: str) -> ContractData:
+    """Extract show data via local AI with strict formatting."""
+    system = f"""
+Extract tour contract details into a JSON object with these EXACT keys: {json.dumps(CSV_HEADERS)}.
+RULES:
+1. Values must be simple strings.
+2. Join multiple values with commas.
+3. Return ONLY raw JSON.
+"""
+    try:
+        r = requests.post(OLLAMA_URL, json={"model": OLLAMA_MODEL, "prompt": f"{system}\n\nTEXT:\n{text}", "stream": False, "format": "json"}, timeout=180)
+        r.raise_for_status()
+        raw_json = json.loads(r.json().get("response", "{}"))
+        # Clean the dict to match Pydantic model (some LLMs might return aliases or attribute names)
+        # We'll use populate_by_name=True in Pydantic Config to handle aliases.
+        return ContractData(**raw_json)
+    except Exception as e:
+        logger.error(f"AI Extraction failed: {e}")
+        return ContractData()
 
-    with open(MASTER_CSV, "w", newline="", encoding="utf-8") as out_f:
-        writer = csv.DictWriter(out_f, fieldnames=headers)
-        writer.writeheader()
-        for row in all_rows:
-            # ensure all headers are present
-            out_row = {h: row.get(h, "") for h in headers}
-            writer.writerow(out_row)
+# ------------- CORE WORKFLOW -------------
 
-    logger.info(f"Combined {len(csv_paths)} file(s) into {MASTER_CSV.name}")
+def process_group(prefix, paths):
+    logger.info(f"Processing group: {prefix}")
+    
+    try:
+        # 1. Gather Text
+        full_text = ""
+        for p in sorted(paths):
+            if p.suffix.lower() == ".pdf":
+                reader = PdfReader(BytesIO(p.read_bytes()))
+                full_text += "\n\n".join(page.extract_text() or "" for page in reader.pages)
+            else:
+                with open(p, "rb") as f:
+                    msg = BytesParser(policy=policy.default).parse(f)
+                    body = msg.get_body(preferencelist=('plain'))
+                    if body:
+                        full_text += f"{msg['subject']}\n{body.get_content()}"
 
-def setup_dirs():
-    for d in [CONTRACTS_DIR, OUTPUTS_DIR, COMPLETE_DIR]:
-        d.mkdir(parents=True, exist_ok=True)
-
-
-def group_files_by_prefix(files):
-    """
-    Group .pdf and .eml files that belong to the same event.
-    Assumes filenames look like:
-    YYYYMMDD_HHMMSS - Subject ... .ext
-    We use everything up to the first ' - ' as the group key.
-    """
-    groups = defaultdict(list)
-    for path in files:
-        name = path.name
-        parts = name.split(" - ", 1)
-        if len(parts) == 2:
-            prefix = parts[0]  # e.g. '20260307_221530'
-        else:
-            # Fallback: stem without extension
-            prefix = path.stem
-        groups[prefix].append(path)
-    return groups
-
-
-def process_group(prefix: str, file_paths: list[Path]):
-    """Process all files belonging to a single event (EML + PDFs)."""
-    logger.info(f"Processing group {prefix} with {len(file_paths)} files")
-
-    # 1. Extract and concatenate text from all files
-    texts = []
-    for fp in sorted(file_paths):
-        try:
-            t = read_file_text(fp)
-            if t.strip():
-                texts.append(f"===== FILE: {fp.name} =====\n{t}")
-        except Exception as e:
-            logger.warning(f"Failed to read {fp.name}: {e}")
-    if not texts:
-        logger.warning(f"No text found for group {prefix}, skipping.")
+        # 2. AI Extract
+        data = call_ollama(full_text)
+        
+        # 3. Mileage
+        process_mileage(data)
+        
+        # 4. Save
+        csv_path = OUTPUTS_DIR / f"{prefix}.csv"
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+            writer.writeheader()
+            writer.writerow(data.model_dump(by_alias=True))
+            
+        # 5. Archive
+        for p in paths:
+            p.rename(COMPLETE_DIR / p.name)
+        logger.info(f"Success: {prefix}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to process {prefix}: {e}")
         return False
 
-    combined_text = "\n\n".join(texts)
-
-    # 2. AI Extraction once per group
-    extracted_data = call_ollama_extract(combined_text)
-
-    # 3. Post-process (Booleans & Mileage)
-    for attr in ['booking', 'mgmt', 'door_deal']:
-        val = getattr(extracted_data, attr).strip().upper()
-        setattr(extracted_data, attr, "TRUE" if val in ("TRUE", "YES", "Y", "1") else "FALSE")
-
-    # Prefer explicit address; else venue + location
-    dest_addr = extracted_data.address or (
-        f"{extracted_data.venue}, {extracted_data.location}"
-        if extracted_data.location else ""
-    )
-    if dest_addr:
-        extracted_data.est_mileage = get_driving_distance_miles(dest_addr)
-
-    # Fallback venue name based on prefix if missing
-    if not extracted_data.venue:
-        extracted_data.venue = prefix
-
-    # 4. Save single CSV row for the whole group
-    csv_path = OUTPUTS_DIR / f"{prefix}.csv"
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-        writer.writeheader()
-        writer.writerow(extracted_data.model_dump(by_alias=True))
-
-    # 5. Archive all files in the group
-    for fp in file_paths:
-        target = COMPLETE_DIR / fp.name
+def combine_csvs():
+    logger.info("Combining outputs...")
+    csv_paths = sorted([p for p in OUTPUTS_DIR.glob("*.csv") if not p.name.startswith("master")])
+    if not csv_paths: return
+    
+    rows = []
+    headers = set()
+    for p in csv_paths:
         try:
-            fp.rename(target)
+            with open(p, "r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                headers.update(reader.fieldnames)
+                rows.extend(list(reader))
         except Exception as e:
-            logger.warning(f"Could not move {fp} to {target}: {e}")
-
-    logger.info(f"Successfully processed group {prefix}")
-    return True
+            logger.error(f"Failed to read {p.name} for combine: {e}")
+            
+    with open(MASTER_CSV, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=sorted(headers))
+        writer.writeheader()
+        writer.writerows(rows)
 
 def main():
-    parser = argparse.ArgumentParser(description="AI-tinerary Contract Processor")
-    parser.add_argument("--process-only", action="store_true", help="Only process files, do not combine CSVs")
-    parser.add_argument("--combine-only", action="store_true", help="Only combine existing CSVs, do not process files")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--update-mileage", action="store_true")
     args = parser.parse_args()
 
-    setup_dirs()
+    for d in [CONTRACTS_DIR, OUTPUTS_DIR, COMPLETE_DIR]: d.mkdir(parents=True, exist_ok=True)
 
-    if not args.combine_only:
+    if args.update_mileage:
+        csv_paths = [p for p in OUTPUTS_DIR.glob("*.csv") if not p.name.startswith("master")]
+        for p in csv_paths:
+            rows = []
+            try:
+                with open(p, "r", newline="", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    rows = list(reader)
+                
+                updated = False
+                for row in rows:
+                    if not row.get("Est. Mileage") or row.get("Est. Mileage") == "0.00":
+                        # Convert row to ContractData for process_mileage
+                        data = ContractData(**row)
+                        process_mileage(data)
+                        # Update row from data
+                        updated_row = data.model_dump(by_alias=True)
+                        row.update(updated_row)
+                        updated = True
+                
+                if updated:
+                    with open(p, "w", newline="", encoding="utf-8") as f:
+                        writer = csv.DictWriter(f, fieldnames=reader.fieldnames)
+                        writer.writeheader()
+                        writer.writerows(rows)
+            except Exception as e:
+                logger.error(f"Failed to update mileage for {p.name}: {e}")
+    else:
         files = [p for p in CONTRACTS_DIR.glob("*") if p.suffix.lower() in (".pdf", ".eml")]
         if not files:
-            logger.info(f"No contract files found in {CONTRACTS_DIR}")
-        else:
-            groups = group_files_by_prefix(files)
-            group_items = list(groups.items())
-            logger.info(
-                f"Found {len(files)} files in {len(group_items)} group(s). "
-                f"Starting processing with {MAX_THREADS} threads..."
-            )
-
-            with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-                futures = {
-                    executor.submit(process_group, prefix, paths): prefix
-                    for prefix, paths in group_items
-                }
-                for future in as_completed(futures):
-                    future.result()
-
-    if not args.process_only:
-        combine_csvs()
+            logger.info("No files found in Incoming/")
+            return
+            
+        groups = defaultdict(list)
+        for f in files:
+            prefix = f.name.split(" - ", 1)[0] if " - " in f.name else f.stem
+            groups[prefix].append(f)
         
-    logger.info("Workflow complete.")
+        # Simple loop for clarity during testing
+        for pref, paths in groups.items():
+            process_group(pref, paths)
+
+    combine_csvs()
 
 if __name__ == "__main__":
     main()

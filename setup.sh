@@ -77,8 +77,11 @@ OLLAMA_MODEL=ministral-3:3b
 # Home Base Address (where the band departs from)
 HOME_BASE_ADDRESS=Johnson City, TN, United States
 
-# OpenRouteService API Key (get one at https://openrouteservice.org/)
+# OpenRouteService configuration (optional).
+# - ORS_API_KEY: public key from https://openrouteservice.org/
+# - ORS_BASE_URL: URL of a self‑hosted container (e.g. http://localhost:8080/ors/v2)
 ORS_API_KEY=your_api_key_here
+ORS_BASE_URL=
 
 # Processing
 MAX_THREADS=4
@@ -109,7 +112,7 @@ echo "Next steps:"
 echo "1. Edit Master Config.txt with your configuration:"
 echo "   - Set OLLAMA_URL and OLLAMA_MODEL"
 echo "   - Set HOME_BASE_ADDRESS"
-echo "   - Set ORS_API_KEY (optional, for routing)"
+echo "   - Set ORS_API_KEY or ORS_BASE_URL (optional, for routing)"
 echo ""
 echo "2. Make sure Ollama is running:"
 echo "   ollama serve"

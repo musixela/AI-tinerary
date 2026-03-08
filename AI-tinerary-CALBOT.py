@@ -61,12 +61,11 @@ from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
-# --------------------------------------------------
-# Configuration & Setup
-# --------------------------------------------------
-
 ROOT_DIR = Path(__file__).resolve().parent
-load_dotenv(dotenv_path=ROOT_DIR / "Master Config.txt")
+
+# Load configuration: .env first (low priority), then Master Config.txt (high priority)
+load_dotenv(override=True)
+load_dotenv(dotenv_path=ROOT_DIR / "Master Config.txt", override=True)
 
 DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")

@@ -106,10 +106,62 @@ OLLAMA_MODEL=ministral-3:3b
 # Home Base Address
 HOME_BASE_ADDRESS=Johnson City, TN, United States
 
-# OpenRouteService API Key (optional, for mileage calculation)
+# OpenRouteService: you can either supply a public API key (optional) or
+# point at a self-hosted server. The container defaults to
+# http://localhost:8080/ors/v2 when run locally.
+# Leave both values blank to disable mileage calculations entirely.
 ORS_API_KEY=your_api_key_here
+ORS_BASE_URL=http://localhost:8080/ors/v2
 ```
 
+> 💡 On startup the script logs the values it read for `ORS_API_KEY` and `ORS_BASE_URL`.
+> If you see `<empty>` next to both, check your Master Config file—env vars with
+> the same names already set in your shell will take precedence and prevent
+> the file from being reloaded unless you restart the process.
+
+### OpenRouteService (optional)
+
+If you prefer to run your own instance instead of using the public API, you
+can launch the official Docker image:
+
+```bash
+docker run --rm -p 8080:8080 openrouteservice/openrouteservice
+```
+
+**Important clarification:** the vanilla ORS container only contains the
+routing backend – it does **not** include any geocoding logic.  The public
+`api.openrouteservice.org` endpoint feels unified because the provider runs a
+separate geocoder (Pelias) behind a gateway, but the open‑source Docker image
+has no internal handler for `/v2/geocode/*` endpoints.  Therefore requests
+like `/ors/v2/geocode/search` return a `404 No static resource` error.  This
+is the error you saw in the logs earlier.
+
+To restore geocoding there are two approaches:
+
+1. **Self‑host everything** – run a dedicated geocoder (e.g. [Photon](https://photon.komoot.io/) or Pelias) and put a reverse proxy in front that
+   directs `/ors/v2/*` traffic to the ORS container and `/v2/geocode/*` traffic
+   to the geocoder.  A sample `docker-compose.yml` and `nginx.conf` are provided
+   in the project root; start them with `docker-compose up` and then point
+   `ORS_BASE_URL` at `http://localhost:24701`.
+
+2. **Use a public geocoder** – leave the local ORS instance running for routing
+   only, and configure your application (or the `ORS_BASE_URL` variable) to
+   hit a geocoding API such as Nominatim, Photon’s public API, or
+   `https://api.openrouteservice.org/geocode/search` directly.
+
+Either way, once a working geocoder is reachable you can test it with:
+
+```bash
+curl -X POST http://localhost:24701/ors/v2/geocode/search \
+     -H 'Content-Type: application/json' \
+     -d '{"text":"Johnson City, TN"}'
+```
+
+(Adjust host/port as appropriate for your setup.)
+
+The **primary takeaway** is that routing and geocoding are separate services –
+logging improvements, fallback logic, and documentation updates in this repo
+now reflect that reality.
 ### Ensure Ollama is Running
 
 Make sure you have Ollama installed and running locally:
@@ -183,6 +235,16 @@ value prompts.
 ```bash
 python AI-tinerary --process-only  # Process files, but don't merge them
 python AI-tinerary --combine-only  # Just merge existing CSVs into the master file
+```
+
+🧪 **Testing**
+
+A small pytest suite exists under `tests/` that verifies routing
+configuration logic.  After installing dependencies you can run:
+
+```bash
+pip install -r Dependencies.txt  # ensure pytest is available
+pytest
 ```
 ## ⚙️ How it Works
 

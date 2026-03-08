@@ -42,6 +42,8 @@ wheels/
 .Legacy/
 Contracts/
 Outputs/
+tests/
+.pytest_cache/
 .DS_Store
 *.pyc
 *.log

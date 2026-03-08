@@ -10,11 +10,14 @@
 # ==========================================
 
 # Home base for mileage estimation (Required)
-HOME_BASE_ADDRESS="123 Main Street, Anytown, USA 12345"
+HOME_BASE_ADDRESS=""
 
-# OpenRouteService API Key for mileage (Optional but recommended)
+# OpenRouteService settings (optional)
+# You can provide a public API key or point at a local container.  The
+# container defaults to http://localhost:8080/ors/v2 when run via Docker.
 # Get a free key at: https://openrouteservice.org/
 ORS_API_KEY=""
+ORS_BASE_URL=""
 
 # Ollama Settings (Local AI)
 OLLAMA_URL="http://localhost:11434/api/generate"
