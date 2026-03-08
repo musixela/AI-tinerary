@@ -679,7 +679,7 @@ async def run_review_process(thread: discord.Thread, filepath: Path, action_type
                 await thread.send("Type `field: value` to update a field, or `done` to finish.")
                 
         except asyncio.TimeoutError:
-            await thread.send("⏱ Timeout.")
+            await thread.send("⏱ **Review Timeout:** No activity detected for 10 minutes. This review session is closing. You can restart it by clicking 'Review' again on the original message.")
             return
 
     # Final review embed

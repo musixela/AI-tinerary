@@ -26,6 +26,7 @@ import openrouteservice
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor
 
 from constants import (
     ROOT_DIR, CONTRACTS_DIR, OUTPUTS_DIR, BITS_DIR, COMPLETE_DIR,
@@ -55,6 +56,7 @@ ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_BASE_URL = os.getenv("ORS_BASE_URL", "")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b")
+MAX_THREADS = int(os.getenv("MAX_THREADS", "4"))
 
 # Explicit Routing Mode Logging
 if ORS_API_KEY:
@@ -257,9 +259,10 @@ def main():
             prefix = f.name.split(" - ", 1)[0] if " - " in f.name else f.stem
             groups[prefix].append(f)
         
-        # Simple loop for clarity during testing
-        for pref, paths in groups.items():
-            process_group(pref, paths)
+        # Parallel extraction of groups
+        logger.info(f"Starting parallel extraction with {MAX_THREADS} threads...")
+        with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+            list(executor.map(lambda x: process_group(x[0], x[1]), groups.items()))
 
 if __name__ == "__main__":
     main()

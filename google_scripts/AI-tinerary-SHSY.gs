@@ -27,9 +27,10 @@ function syncMasterToSheets() {
   var headers = csvData[0];
   var dateIdx = headers.indexOf('Starting Date');
   var venueIdx = headers.indexOf('Venue');
+  var timeIdx = headers.indexOf('Time');
 
-  if (dateIdx === -1 || venueIdx === -1) {
-    Logger.log('Error: Starting Date or Venue column missing in CSV.');
+  if (dateIdx === -1 || venueIdx === -1 || timeIdx === -1) {
+    Logger.log('Error: Starting Date, Venue, or Time column missing in CSV.');
     return;
   }
 
@@ -49,9 +50,10 @@ function syncMasterToSheets() {
     sheetHeaders = sheetData[0];
     var sDateIdx = sheetHeaders.indexOf('Starting Date');
     var sVenueIdx = sheetHeaders.indexOf('Venue');
+    var sTimeIdx = sheetHeaders.indexOf('Time');
     
     for (var i = 1; i < sheetData.length; i++) {
-      var key = sheetData[i][sDateIdx] + '|' + sheetData[i][sVenueIdx];
+      var key = sheetData[i][sDateIdx] + '|' + sheetData[i][sVenueIdx] + '|' + sheetData[i][sTimeIdx];
       sheetMap[key] = i + 1; // 1-based row index
     }
   } else {
@@ -63,7 +65,7 @@ function syncMasterToSheets() {
   // 5. Upsert Logic
   for (var j = 1; j < csvData.length; j++) {
     var row = csvData[j];
-    var key = row[dateIdx] + '|' + row[venueIdx];
+    var key = row[dateIdx] + '|' + row[venueIdx] + '|' + row[timeIdx];
     
     // Prepare row for writing (match sheet column order)
     var writeRow = [];

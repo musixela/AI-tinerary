@@ -105,7 +105,10 @@ def get_driving_data(dest_coords, origin_coords):
     # Fallback to geodesic (straight-line) distance
     try:
         dist_miles = geodesic((origin_coords[1], origin_coords[0]), (dest_coords[1], dest_coords[0])).miles
-        return dist_miles * 1.25, None # 25% overhead for driving
+        miles_est = dist_miles * 1.25 # 25% overhead for driving
+        # Heuristic: 50mph average for duration if ORS fails
+        duration_est = (miles_est / 50.0) * 3600
+        return miles_est, duration_est
     except Exception as e:
         logger.error(f"Geodesic fallback failed: {e}")
     
