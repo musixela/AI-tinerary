@@ -78,7 +78,9 @@ REM Create required directories
 echo Creating project directories...
 if not exist "%PROJECT_DIR%\Contracts\Incoming" mkdir "%PROJECT_DIR%\Contracts\Incoming"
 if not exist "%PROJECT_DIR%\Contracts\Complete" mkdir "%PROJECT_DIR%\Contracts\Complete"
-if not exist "%PROJECT_DIR%\Outputs" mkdir "%PROJECT_DIR%\Outputs"
+if not exist "%PROJECT_DIR%\Outputs\Bits" mkdir "%PROJECT_DIR%\Outputs\Bits"
+if not exist "%PROJECT_DIR%\Outputs\Backups" mkdir "%PROJECT_DIR%\Outputs\Backups"
+if not exist "%PROJECT_DIR%\Logs" mkdir "%PROJECT_DIR%\Logs"
 echo [OK] Directories created
 echo.
 
@@ -104,6 +106,9 @@ if not exist "%PROJECT_DIR%\Master Config.txt" (
         echo.
         echo # Processing
         echo MAX_THREADS=4
+        echo.
+        echo # Default Timezone for Calendar events (e.g. America/New_York^)
+        echo TIMEZONE=America/New_York
         echo.
         echo # Discord Bot (optional^)
         echo # Generate a bot application and paste the token here.

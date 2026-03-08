@@ -1,39 +1,32 @@
-# 🎸 AI-tinerary
+# 🎸 AI-tinerary: The Autonomous Tour Manager
 
-**AI-tinerary** is a powerful, multithreaded Python pipeline designed to automate tour management. It parses incoming contract emails and PDFs, extracts complex event details using local AI, calculates driving mileage, and generates structured CSV itineraries. 
+**AI-tinerary** is an advanced, AI-driven suite of bots designed to automate the heavy lifting of tour management. From extracting contract data to planning complex driving routes and managing your calendar, AI-tinerary handles the logistics so you can focus on the music.
 
-Coupled with a custom **Discord Bot** and **Google Calendar integration**, it provides a seamless, interactive command center for your entire band or touring crew.
-
----
-
-## ✨ Key Features
-
-* **🧠 Local AI Extraction:** Uses [Ollama](https://ollama.com/) (default: `ministral-3:3b`) to securely parse unstructured contracts into strict JSON data.
-* **🗺️ Smart Routing & Geocoding:** Integrates OpenRouteService and Nominatim to automatically calculate driving distances from your home base to the venue.
-* **🤖 Discord Tour Manager Bot:** Meet "Cal," your AI assistant. Cal automatically notifies your Discord channel when new contracts are processed and guides you through an interactive Q&A thread to fill in missing details and publish to calendars.
-* **📅 Google Calendar Sync:** Automatically infers dates and times from natural language and pushes events directly to your band's private and public calendars.
-* **📥 Automated Gmail Ingestion:** Includes a Google Apps Script to automatically sync contract attachments from labeled Gmail threads straight into your processing folder.
-* **🛡️ Strict Validation:** Uses Pydantic to ensure AI outputs perfectly match your target CSV spreadsheet schema every time.
+The system is composed of three primary engines:
+1.  **Extraction Engine (`AI-tinerary-CSV.py`):** Converts raw PDFs and emails into structured data.
+2.  **CALBOT (`AI-tinerary-CALBOT.py`):** The Discord-based coordinator for review, master CSV merging, and Google Calendar sync.
+3.  **MAPBOT (`AI-tinerary-MAPBOT.py`):** The logistics specialist for routing, mileage, accommodations, and itinerary timing.
 
 ---
 
-## 📁 Repository Structure
+## ✨ System Architecture
 
-```text
-AI-tinerary/
-├── AI-tinerary-CSV.py       # Core data extraction & routing pipeline
-├── AI-tinerary-CALBOT.py    # Discord Tour Manager Bot
-├── setup.sh                 # Automated setup for macOS/Linux
-├── setup.bat                # Automated setup for Windows
-├── Dependencies.txt         # Python dependencies
-├── Master Config.txt        # Master configuration (auto-generated on setup)
-├── google_scripts/          # Gmail to Drive automation script
-├── Contracts/               
-│   ├── Incoming/            # Drop raw .eml and .pdf contracts here
-│   └── Complete/            # Processed files are automatically archived here
-└── Outputs/                 # Generated individual CSVs and the master CSV
+### 🧠 AI Extraction (`AI-tinerary-CSV.py`)
+- **Local AI:** Uses [Ollama](https://ollama.com/) (default: `ministral-3:3b`) to securely parse unstructured contracts into strict JSON.
+- **Strict Schema:** Powered by Pydantic to ensure AI outputs perfectly match your target itinerary schema.
+- **Multithreaded:** Processes batches of contracts simultaneously for high efficiency.
 
-```
+### 🤖 CALBOT: The Coordinator
+- **Discord Interface:** Monitors your processed data and notifies your team when new contracts arrive.
+- **Interactive Review:** Guides you through private Discord threads to fill missing details or use AI to extract info from pasted snippets.
+- **Master Merge:** Intelligently merges updates into a `master-output.csv` with fuzzy venue matching and automated changelogs.
+- **Calendar Sync:** Automatically creates and updates events on both **Private Band** and **Public Audience** Google Calendars.
+
+### 🚚 MAPBOT: The Logistics Specialist
+- **Smart Routing:** Calculates high-accuracy driving routes using **OpenRouteService** (with geodesic fallbacks).
+- **Tour Context:** Automatically determines origins based on your tour schedule (Previous Gig -> Next Gig or Home Base -> Gig).
+- **Accommodation Tracking:** Interactively asks about overnight stays and stores hotel/lodging addresses.
+- **Precision Timing:** Estimates departure times based on driving duration and your required `Load In` or `Doors` time (includes a 30m safety buffer).
 
 ---
 
@@ -41,140 +34,72 @@ AI-tinerary/
 
 ### 1. Installation
 
-**Option A: Automated Setup (Recommended)**
-
 **macOS / Linux:**
-
 ```bash
 git clone <your-repo-url>
 cd AI-tinerary
 ./setup.sh
-
 ```
 
 **Windows:**
-
 ```cmd
 git clone <your-repo-url>
 cd AI-tinerary
 setup.bat
-
-```
-
-*The setup scripts will create a virtual environment, install dependencies, create required directories, and generate your `Master Config.txt` file.*
-
-**Option B: Manual Setup**
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r Dependencies.txt
-
 ```
 
 ### 2. Configuration (`Master Config.txt`)
 
-All settings are managed via `Master Config.txt` in the root directory. Edit this file to configure your AI, Routing, Discord, and Google settings.
+All settings are managed via `Master Config.txt`. Key sections include:
 
-```ini
-# Ollama Settings
-OLLAMA_URL=http://localhost:11434/api/generate
-OLLAMA_MODEL=ministral-3:3b
+- **AI:** `OLLAMA_URL`, `OLLAMA_MODEL`.
+- **Logistics:** `HOME_BASE_ADDRESS`, `ORS_API_KEY`.
+- **Discord:** `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`.
+- **Google:** `GOOGLE_SERVICE_ACCOUNT_FILE`, `BAND_CALENDAR_ID`, `PUBLIC_CALENDAR_ID`.
 
-# Routing & Mileage (Optional)
-HOME_BASE_ADDRESS=Johnson City, TN, United States
-ORS_API_KEY=your_public_api_key
-ORS_BASE_URL=http://localhost:8080/ors/v2 # For self-hosting
-
-# Discord Bot (Optional)
-DISCORD_BOT_TOKEN=your_discord_token_here
-DISCORD_CHANNEL_ID=your_channel_id_here
-
-# Google Calendar (Optional)
-GOOGLE_SERVICE_ACCOUNT_FILE=path/to/credentials.json
-BAND_CALENDAR_ID=your_band_calendar_id@group.calendar.google.com
-PUBLIC_CALENDAR_ID=your_public_calendar_id@group.calendar.google.com
-
-```
-
-### 3. Ensure Local Services are Running
-
-Make sure you have Ollama installed and running before starting the pipeline:
-
-```bash
-ollama serve
-ollama pull ministral-3:3b
-
-```
+### 3. External Services
+- **Ollama:** Must be running locally (`ollama serve`).
+- **OpenRouteService:** Requires a free API key from [openrouteservice.org](https://openrouteservice.org/) or a local Docker instance.
 
 ---
 
-## 💻 Usage & Workflows
+## 💻 Usage Workflow
 
-### Phase 1: The Core Pipeline
-
-Place your `.eml` or `.pdf` files into the `Contracts/Incoming/` directory, then run the CSV extractor:
-
+### Step 1: Ingestion
+Place `.pdf` or `.eml` contracts into `Contracts/Incoming/`. Run the extractor:
 ```bash
-# Process all files, calculate mileage, and generate Bits (partial CSVs)
 python AI-tinerary-CSV.py
-
-# Optional: Force update mileage on existing processed CSVs
-python AI-tinerary-CSV.py --update-mileage
-
 ```
+This generates a "Bit" (partial CSV) in `Outputs/Bits/`.
 
-### Phase 2: The Discord Bot (CALBOT)
+### Step 2: Discord Review (CALBOT + MAPBOT)
+1. CALBOT detects the new Bit and posts a **"📝 Review"** button in Discord.
+2. Clicking Review opens a private thread.
+3. **Logistics Check:** MAPBOT asks if you're staying the night. If yes, provide the address.
+4. **Data Review:** Fill in any missing contract fields.
+5. **Finalize:** Click **"✅ Confirm & Publish"**.
 
-CALBOT is an event-driven assistant that watches your processed data and helps you finalize the details via Discord.
-
-To run the bot, keep this script running in a terminal or server:
-
-```bash
-python AI-tinerary-CALBOT.py
-
-```
-
-**Workflow:**
-
-1.  **Auto-Detection:** The bot monitors the `Outputs/Bits` folder. When a new contract CSV is generated by the pipeline, CALBOT posts a notification to your configured Discord channel.
-2.  **Interactive Review:** Click the **"📝 Review & Finalize"** button on the notification. The bot will create a private thread to guide you through any missing information.
-3.  **Smart Assistance:** Inside the thread, you can:
-    *   Type the missing details directly.
-    *   Type `skip` to leave a field blank.
-    *   Type `auto` then paste an email snippet or text to have the AI attempt to extract the specific field for you.
-4.  **One-Click Deployment:** Once reviewed, click **"✅ Approve & Publish"**. CALBOT will:
-    *   Update the individual CSV and the Master Itinerary.
-    *   Push the event to both private (Band) and public Google Calendars.
-    *   Archive the CSV file to the `Processed` folder.
+### Step 3: Automation Payload
+Upon finalization, the system automatically:
+- Merges the data into the **Master Itinerary**.
+- Calculates the **Route & Mileage** from the previous tour stop.
+- Injects **Recommended Departure Times** into the gig notes.
+- Pushes events to **Google Calendars**.
+- Archives the raw files.
 
 ---
 
-## 📎 Gmail to Drive Automation (Optional)
+## 🤖 Bot Commands
 
-We include a Google Apps Script to automate getting files into your `Incoming` folder.
-
-1. Open [Google Apps Script](https://script.google.com/) and create a new project.
-2. Copy the contents of `google_scripts/AI-tinerary-EMEX-Main.gs` into the editor.
-3. Update `SOURCE_LABEL_NAME` and your Drive Folder IDs.
-4. Set a time‑driven trigger (e.g., every 15 minutes) to run `saveConfirmedShowsAttachmentsToDrive`.
-5. *Cleanup:* Run `cleanupDriveFolder()` occasionally to purge the sync folder after your Python script has successfully processed the files locally.
-
----
-
-## 🗺️ Advanced: Self-Hosting OpenRouteService
-
-If you prefer to run your own ORS instance instead of using the public API:
-
-```bash
-docker run --rm -p 8080:8080 openrouteservice/openrouteservice
-
-```
-
-**Note on Geocoding:** The vanilla ORS container handles *routing* but not *geocoding*. If you self-host, you must either run a dedicated geocoder (like Photon or Pelias) behind a reverse proxy, or leave `ORS_BASE_URL` blank and rely on the built-in Nominatim fallback for address resolution.
+| Command | Purpose |
+| :--- | :--- |
+| `!calbot status` | Show pending reviews and Master CSV stats. |
+| `!calbot merge` | Manually trigger a scan of the `Bits/` folder. |
+| `!mapbot status` | List gigs currently needing routing or mileage. |
+| `!mapbot route all` | Recalculate routing for all gigs in the Master CSV. |
+| `!mapbot route <date>` | Recalculate routing for a specific date (e.g., `!mapbot route 2025-06-15`). |
 
 ---
 
 ## 📄 License
-
 Released under the **GNU General Public License v3.0**. See the `LICENSE` file for details.

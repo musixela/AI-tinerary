@@ -27,6 +27,9 @@ OLLAMA_MODEL="ministral-3:3b"
 # Number of files to process simultaneously
 MAX_THREADS=4
 
+# Default Timezone for Calendar events (e.g., America/New_York, America/Los_Angeles)
+TIMEZONE="America/New_York"
+
 # -----------------------------------------
 # Discord bot (used by AI-tinerary-CALBOT.py)
 # Create a Discord application/bot and paste the token here so the

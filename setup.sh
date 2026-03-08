@@ -59,7 +59,9 @@ echo ""
 echo "Creating project directories..."
 mkdir -p "$PROJECT_DIR/Contracts/Incoming"
 mkdir -p "$PROJECT_DIR/Contracts/Complete"
-mkdir -p "$PROJECT_DIR/Outputs"
+mkdir -p "$PROJECT_DIR/Outputs/Bits"
+mkdir -p "$PROJECT_DIR/Outputs/Backups"
+mkdir -p "$PROJECT_DIR/Logs"
 echo "✓ Directories created"
 echo ""
 
@@ -85,6 +87,9 @@ OLLAMA_MODEL="ministral-3:3b"
 
 # Processing
 MAX_THREADS=4
+
+# Default Timezone for Calendar events (e.g. America/New_York)
+TIMEZONE="America/New_York"
 
 # Discord Bot (optional)
 # Generate a bot application and paste the token here.

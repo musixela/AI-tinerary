@@ -21,6 +21,7 @@ import json
 import asyncio
 import logging
 import shutil
+import difflib
 from pathlib import Path
 from datetime import datetime
 import importlib.util
@@ -69,6 +70,13 @@ BITS_DIR = OUTPUTS_DIR / "Bits"
 PROCESSED_DIR = BITS_DIR / "Processed"
 MASTER_CSV = OUTPUTS_DIR / "master-output.csv"
 STATE_FILE = OUTPUTS_DIR / "bot_state.json"
+BACKUPS_DIR = OUTPUTS_DIR / "Backups"
+LOGS_DIR = ROOT_DIR / "Logs"
+
+# Ensure directories exist
+PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Load Config
 load_dotenv(override=True)
@@ -79,6 +87,7 @@ DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
 GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
 BAND_CALENDAR_ID = os.getenv("BAND_CALENDAR_ID")
 PUBLIC_CALENDAR_ID = os.getenv("PUBLIC_CALENDAR_ID")
+TIMEZONE = os.getenv("TIMEZONE", "America/New_York")
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b")
@@ -92,8 +101,268 @@ _csv_spec.loader.exec_module(_ai_csv)
 CSV_HEADERS = _ai_csv.CSV_HEADERS
 call_ollama_extract = _ai_csv.call_ollama_extract
 
-# Ensure directories exist
-PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+# CALBOT workflow fields
+WORKFLOW_FIELDS = [
+    "Discord Finished",
+    "Calendar Created",
+    "Public Calendar Created",
+    "Routing",
+    "Mileage"
+]
+
+# Ensure MASTER_CSV headers include workflow fields
+def get_all_headers():
+    headers = list(CSV_HEADERS)
+    for f in WORKFLOW_FIELDS:
+        if f not in headers:
+            headers.append(f)
+    # Also add the calendar start/end fields used by the original bot
+    if "Calendar Start" not in headers: headers.append("Calendar Start")
+    if "Calendar End" not in headers: headers.append("Calendar End")
+    return headers
+
+ALL_HEADERS = get_all_headers()
+
+# ------------------------------------------------------------------
+# Stage 1: Row Matching
+# ------------------------------------------------------------------
+
+def find_matching_row(master_rows: list, new_row: dict) -> int:
+    """
+    Matching logic (in order of priority):
+    1. Exact match: Same Event Date + exact Venue string
+    2. Fuzzy match: Same Event Date + fuzzy Venue (>80% similarity)
+    3. Fallback: Same Event Date + same City + same Contact Name
+    Returns: Row index in master_rows, or -1 if new gig
+    """
+    new_date = new_row.get("Starting Date")
+    new_venue = new_row.get("Venue")
+    new_location = new_row.get("Location", "") # Often City, State
+    new_contact = new_row.get("Contact Name", "")
+
+    if not new_date:
+        return -1
+
+    for i, row in enumerate(master_rows):
+        row_date = row.get("Starting Date")
+        row_venue = row.get("Venue")
+        row_location = row.get("Location", "")
+        row_contact = row.get("Contact Name", "")
+
+        if row_date != new_date:
+            continue
+
+        # 1. Exact Venue Match
+        if row_venue == new_venue:
+            # Check Start Time to disambiguate multiple shows same day
+            new_time = new_row.get("Time")
+            row_time = row.get("Time")
+            if new_time and row_time and new_time != row_time:
+                # Might be a different show on the same day?
+                # For now, if venue and date match, we'll consider it a match 
+                # unless times are explicitly different and both present.
+                pass
+            return i
+
+        # 2. Fuzzy Venue Match
+        if row_venue and new_venue:
+            similarity = difflib.SequenceMatcher(None, row_venue, new_venue).ratio()
+            if similarity > 0.8:
+                return i
+
+        # 3. Fallback: Same Date + Location + Contact
+        if row_location == new_location and row_contact == new_contact and new_location and new_contact:
+            return i
+
+    return -1
+
+# ------------------------------------------------------------------
+# Stage 2: Field Merge Logic
+# ------------------------------------------------------------------
+
+def merge_fields(existing: dict, new: dict) -> dict:
+    """
+    CALBOT-managed fields (merge rules):
+    Field Rule: Newest non-empty
+    Preserve existing: Routing, Mileage, Workflow states
+    Returns: Merged row dict
+    """
+    merged = existing.copy()
+    
+    # Fields that CALBOT manages (overwrite if new is non-empty)
+    managed_fields = list(CSV_HEADERS)
+    
+    # Remove fields that should be preserved (MAPBOT or Workflow managed)
+    to_preserve = ["Routing", "Mileage", "Est. Mileage", "Discord Finished", "Calendar Created", "Public Calendar Created"]
+    
+    for field in managed_fields:
+        if field in to_preserve:
+            continue
+        
+        new_val = new.get(field)
+        if new_val and str(new_val).strip():
+            merged[field] = new_val
+
+    # Special handling for Notes/Other Details (Append)
+    new_notes = new.get("Other Details")
+    old_notes = existing.get("Other Details")
+    if new_notes and str(new_notes).strip() and new_notes != old_notes:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if old_notes:
+            merged["Other Details"] = f"{old_notes}\n[{timestamp} UPDATE]: {new_notes}"
+        else:
+            merged["Other Details"] = new_notes
+
+    return merged
+
+# ------------------------------------------------------------------
+# Stage 3: Changelog Generation
+# ------------------------------------------------------------------
+
+def generate_changelog(old: dict, merged: dict) -> dict:
+    """
+    Purpose: Human-readable summary of changes for Discord notification
+    Returns None if no meaningful changes detected
+    """
+    changed_fields = []
+    summary_lines = []
+    needs_mapbot = False
+    needs_calendar_update = False
+
+    # Fields to monitor for changes
+    monitor_fields = {
+        "Starting Date": "needs_calendar_update",
+        "Ending Date": "needs_calendar_update",
+        "Time": "needs_calendar_update",
+        "Venue": "needs_calendar_update",
+        "Address": "needs_mapbot",
+        "Location": "needs_mapbot",
+        "Pay": None,
+        "Contact Name": None,
+        "Load In": None,
+        "Doors": None
+    }
+
+    for field, effect in monitor_fields.items():
+        old_val = str(old.get(field, "")).strip()
+        new_val = str(merged.get(field, "")).strip()
+
+        if new_val and old_val != new_val:
+            # Ignore "empty -> value" for some fields if we want, 
+            # but usually first-time population is fine to skip in "changelog" 
+            # if we are in "Update" mode.
+            if not old_val:
+                continue
+
+            changed_fields.append(field)
+            summary_lines.append(f"{field}: {old_val} -> {new_val}")
+            
+            if effect == "needs_mapbot":
+                needs_mapbot = True
+            if effect == "needs_calendar_update":
+                needs_calendar_update = True
+
+    if not changed_fields:
+        return None
+
+    return {
+        "changed_fields": changed_fields,
+        "summary_lines": summary_lines,
+        "needs_mapbot": needs_mapbot,
+        "needs_calendar_update": needs_calendar_update
+    }
+
+# ------------------------------------------------------------------
+# Stage 4: CSV Persistence
+# ------------------------------------------------------------------
+
+def update_master_csv(new_row: dict, source_file: str) -> dict:
+    """
+    Atomic write process:
+    1. Backup master CSV
+    2. Load current rows
+    3. Match & Merge
+    4. Write temp & rename
+    5. Log action
+    """
+    # 1. Backup
+    if MASTER_CSV.exists():
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_path = BACKUPS_DIR / f"master-output-{timestamp}.csv"
+        shutil.copy(MASTER_CSV, backup_path)
+
+    # 2. Load
+    master_rows = []
+    if MASTER_CSV.exists():
+        try:
+            with open(MASTER_CSV, "r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                master_rows = list(reader)
+        except Exception as e:
+            logger.error(f"Failed to read master CSV: {e}")
+
+    # 3. Match
+    row_index = find_matching_row(master_rows, new_row)
+    
+    action = "appended"
+    changelog = None
+    needs_mapbot = False
+    needs_calendar_update = False
+    merged_row = new_row.copy()
+
+    if row_index >= 0:
+        action = "updated"
+        old_row = master_rows[row_index]
+        merged_row = merge_fields(old_row, new_row)
+        changelog = generate_changelog(old_row, merged_row)
+        
+        if changelog:
+            needs_mapbot = changelog.get("needs_mapbot", False)
+            needs_calendar_update = changelog.get("needs_calendar_update", False)
+        else:
+            # No changes detected
+            action = "ignored"
+        
+        master_rows[row_index] = merged_row
+    else:
+        # Append new row, ensure all headers are present
+        full_new_row = {h: "" for h in ALL_HEADERS}
+        full_new_row.update(new_row)
+        master_rows.append(full_new_row)
+        merged_row = full_new_row
+
+    # 4. Write
+    temp_csv = MASTER_CSV.with_suffix(".tmp")
+    try:
+        with open(temp_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=ALL_HEADERS, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(master_rows)
+        temp_csv.replace(MASTER_CSV)
+    except Exception as e:
+        logger.error(f"Failed to write master CSV: {e}")
+        return {"action": "failed", "error": str(e)}
+
+    # 5. Log Action
+    log_entry = {
+        "timestamp": datetime.now().isoformat(),
+        "source": source_file,
+        "action": action,
+        "row_index": row_index if row_index >= 0 else len(master_rows)-1,
+        "needs_mapbot": needs_mapbot,
+        "needs_calendar_update": needs_calendar_update
+    }
+    with open(LOGS_DIR / "calbot-updates.jsonl", "a") as f:
+        f.write(json.dumps(log_entry) + "\n")
+
+    return {
+        "action": action,
+        "row_index": row_index if row_index >= 0 else len(master_rows)-1,
+        "changelog": changelog,
+        "needs_mapbot": needs_mapbot,
+        "needs_calendar_update": needs_calendar_update,
+        "merged_row": merged_row
+    }
 
 # ------------------------------------------------------------------
 # Utilities
@@ -207,8 +476,13 @@ def infer_calendar_datetimes(row: dict):
     except:
         pass
 
-def create_calendar_events(row: dict):
-    """Creates events on configured calendars."""
+def create_calendar_events(row: dict, needs_update: bool = False):
+    """
+    Creates or updates events on configured calendars.
+    If needs_update is True, it should ideally find and update/replace existing events.
+    For simplicity in this V1, if Calendar Created is True, we could try to delete old ones if we had IDs.
+    Since we don't store IDs yet, we'll just create new ones or mention updates.
+    """
     if not GOOGLE_SERVICE_ACCOUNT_FILE:
         return ["⚠️ Google Calendar not configured (no service account)."]
 
@@ -218,15 +492,23 @@ def create_calendar_events(row: dict):
     except Exception as e:
         return [f"❌ Google Auth Failed: {e}"]
 
-    summary = f"{row.get('Venue', 'Gig')} ({row.get('Location', '')})"
-    description = "\n".join([f"{k}: {v}" for k, v in row.items() if v])
+    # Prepare Event Data
+    venue = row.get('Venue', 'Gig')
+    location_str = row.get('Location', '')
+    summary = f"{venue} ({location_str})"
     
+    # Private Description: Full details
+    private_desc = "\n".join([f"{k}: {v}" for k, v in row.items() if v and k not in WORKFLOW_FIELDS])
+    
+    # Public Description: Sanitized
+    public_desc = f"Live at {venue}"
+
     event_body = {
         "summary": summary,
-        "description": description,
+        "description": private_desc,
         "location": row.get("Address", ""),
-        "start": {"dateTime": row.get("Calendar Start"), "timeZone": "America/New_York"},
-        "end": {"dateTime": row.get("Calendar End"), "timeZone": "America/New_York"}
+        "start": {"dateTime": row.get("Calendar Start"), "timeZone": TIMEZONE},
+        "end": {"dateTime": row.get("Calendar End"), "timeZone": TIMEZONE}
     }
     
     # Fallback for full day if parsing failed
@@ -236,143 +518,186 @@ def create_calendar_events(row: dict):
 
     results = []
     
-    # Band Calendar
+    # 1. Band Calendar (Private)
     if BAND_CALENDAR_ID:
         try:
+            # TODO: In a more advanced version, store event ID in CSV to enable true updates
             e = service.events().insert(calendarId=BAND_CALENDAR_ID, body=event_body).execute()
             results.append(f"✅ Band Calendar: [Link]({e.get('htmlLink')})")
+            row["Calendar Created"] = "True"
         except Exception as e:
             results.append(f"❌ Band Cal Error: {e}")
             
-    # Public Calendar (Sanitize sensitive info if needed, currently copying same)
+    # 2. Public Calendar
     if PUBLIC_CALENDAR_ID:
         try:
-            # Maybe strip Pay/Contact for public?
             pub_body = event_body.copy()
-            pub_body["description"] = f"Live at {row.get('Venue')}"
+            pub_body["description"] = public_desc
             e = service.events().insert(calendarId=PUBLIC_CALENDAR_ID, body=pub_body).execute()
             results.append(f"✅ Public Calendar: [Link]({e.get('htmlLink')})")
+            row["Public Calendar Created"] = "True"
         except Exception as e:
             results.append(f"❌ Public Cal Error: {e}")
 
     return results
 
 # ------------------------------------------------------------------
-# Discord UI
+# Discord UI (Stages 5 & 7)
 # ------------------------------------------------------------------
 
 class ReviewView(discord.ui.View):
-    def __init__(self, filepath: Path):
+    def __init__(self, filepath: Path, action_type: str, changelog: dict = None):
         super().__init__(timeout=None)
         self.filepath = filepath
+        self.action_type = action_type # "appended" or "updated"
+        self.changelog = changelog
 
-    @discord.ui.button(label="📝 Review & Finalize", style=discord.ButtonStyle.primary, custom_id="review_btn")
+    @discord.ui.button(label="📝 Review", style=discord.ButtonStyle.primary, custom_id="review_btn")
     async def review(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Check if file still exists (might have been moved/deleted)
         if not self.filepath.exists():
-            await interaction.response.send_message("❌ File no longer exists in `Bits/`. It may have been processed already.", ephemeral=True)
+            await interaction.response.send_message("❌ File no longer exists.", ephemeral=True)
             return
 
-        # Create a private thread for the review
-        thread_name = f"Review: {self.filepath.stem}"
+        thread_name = f"{'🆕 New' if self.action_type == 'appended' else '📝 Update'}: {self.filepath.stem}"
         thread = await interaction.channel.create_thread(name=thread_name, type=discord.ChannelType.private_thread)
-        await interaction.response.send_message(f"Started review in thread: {thread.mention}", ephemeral=True)
+        await interaction.response.send_message(f"Started review in {thread.mention}", ephemeral=True)
         
-        # Start the interactive process in the thread
-        await run_review_process(thread, self.filepath)
+        await run_review_process(thread, self.filepath, self.action_type, self.changelog)
 
 
 class FinalizeView(discord.ui.View):
-    def __init__(self, filepath: Path, row: dict):
+    def __init__(self, filepath: Path, row: dict, action_type: str, needs_calendar_update: bool = False):
         super().__init__(timeout=None)
         self.filepath = filepath
         self.row = row
+        self.action_type = action_type
+        self.needs_calendar_update = needs_calendar_update
 
-    @discord.ui.button(label="✅ Approve & Publish", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Confirm & Publish", style=discord.ButtonStyle.success)
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         
-        # 1. Infer Dates
+        # 1. Set Workflow State
+        self.row["Discord Finished"] = "True"
+        
+        # 2. Infer Dates
         infer_calendar_datetimes(self.row)
         
-        # 2. Update CSV on disk
-        write_csv_row(self.filepath, self.row)
+        # 3. Update Master CSV (Stage 4)
+        result = update_master_csv(self.row, self.filepath.name)
         
-        # 3. Append to Master
-        append_to_master_csv(self.row)
-        
-        # 4. Calendar
-        cal_results = await asyncio.to_thread(create_calendar_events, self.row)
+        # 4. MAPBOT Routing (New Stage)
+        try:
+            mapbot = get_mapbot_module()
+            gigs = mapbot.get_sorted_gigs()
+            # Find the row in the sorted gigs and route it
+            for gig in gigs:
+                if gig.get("Starting Date") == self.row.get("Starting Date") and gig.get("Venue") == self.row.get("Venue"):
+                    if await mapbot.plan_route_for_gig(gig, gigs):
+                        mapbot.update_master_csv_atomic(gigs)
+                        await interaction.followup.send("🚚 MAPBOT: Routing and logistics calculated.")
+                    break
+        except Exception as e:
+            logger.error(f"MAPBOT execution failed during finalize: {e}")
+
+        # 5. Calendar (Stage 6)
+        # Only create if not already created OR if update needed
+        cal_results = []
+        if self.row.get("Calendar Created") != "True" or self.needs_calendar_update:
+            cal_results = await asyncio.to_thread(create_calendar_events, self.row, self.needs_calendar_update)
         
         # 5. Archive
         try:
             shutil.move(str(self.filepath), str(PROCESSED_DIR / self.filepath.name))
-            archive_msg = "📂 Moved file to `Processed/`"
+            archive_msg = "📂 File archived."
         except Exception as e:
-            archive_msg = f"⚠️ Failed to move file: {e}"
+            archive_msg = f"⚠️ Archive failed: {e}"
             
         summary = "\n".join(cal_results)
-        await interaction.followup.send(f"**Deployment Complete!**\n{archive_msg}\n{summary}\n\n*Closing thread in 5s...*")
+        await interaction.followup.send(f"**Done!**\n{archive_msg}\n{summary}\n\n*Closing thread...*")
         await asyncio.sleep(5)
         try:
             await interaction.channel.edit(archived=True, locked=True)
-        except Exception as e:
-            logger.error(f"Failed to archive thread: {e}")
+        except:
+            pass
 
-async def run_review_process(thread: discord.Thread, filepath: Path):
+async def run_review_process(thread: discord.Thread, filepath: Path, action_type: str, changelog: dict):
     """The interactive Q&A loop inside the thread."""
     row = read_csv_row(filepath)
     
-    # Intro
-    await thread.send(f"**Reviewing:** `{filepath.name}`\nI'll guide you through filling in the missing details.")
-    
-    # 1. Identify Missing Fields
-    ignore_fields = ["Calendar Start", "Calendar End", "Est. Mileage"] # Don't ask about these
-    missing = [k for k, v in row.items() if not v and k not in ignore_fields]
-    
-    if not missing:
-        await thread.send("✨ No missing fields detected!")
+    if action_type == "appended":
+        await thread.send(f"🆕 **New Gig Detected!**\nVenue: `{row.get('Venue')}`\nDate: `{row.get('Starting Date')}`")
     else:
-        await thread.send(f"**Missing Fields:** {', '.join(missing)}")
+        await thread.send(f"📝 **Update Detected!**\nVenue: `{row.get('Venue')}`\nDate: `{row.get('Starting Date')}`")
+        if changelog:
+            changes = "\n".join([f"- {line}" for line in changelog['summary_lines']])
+            await thread.send(f"**Changes:**\n{changes}")
+            if changelog.get('needs_mapbot'):
+                await thread.send("⚠️ Location changed—MAPBOT will need to recalculate.")
+
+    # Identify Missing Details
+    ignore = ["Calendar Start", "Calendar End", "Est. Mileage"] + WORKFLOW_FIELDS
+    missing = [k for k, v in row.items() if not v and k not in ignore]
+
+    if missing:
+        await thread.send(f"**Missing Details:** {', '.join(missing)}\nReply with `field: value` to update, or `done` to finish.")
+
+    # 2. Logistics Questions (MAPBOT)
+    await thread.send("🚚 **Logistics Check:** Are we staying the night after this gig? (Yes/No)")
+    try:
+        def check_bot(m): return m.channel.id == thread.id and not m.author.bot
+        msg = await bot.wait_for('message', check=check_bot, timeout=300)
+        if "yes" in msg.content.lower():
+            row["Accomodations"] = "TRUE"
+            await thread.send("🏨 Where are we staying? (Address or 'skip')")
+            addr_msg = await bot.wait_for('message', check=check_bot, timeout=300)
+            if addr_msg.content.lower() != "skip":
+                row["Accom Address"] = addr_msg.content.strip()
+                await thread.send(f"✅ Set accommodation address to `{row['Accom Address']}`")
+        else:
+            row["Accomodations"] = "FALSE"
+    except asyncio.TimeoutError:
+        await thread.send("⏱ Logistics timeout. Skipping.")
+
+    # 3. Interactive loop for other fields
+    while True:
+
+        def check(m):
+            return m.channel.id == thread.id and not m.author.bot
         
-        for field in missing:
-            await thread.send(f"❓ **{field}**: (Type answer, 'skip', or 'auto' to try AI extraction from a pasted email)")
+        try:
+            msg = await bot.wait_for('message', check=check, timeout=600)
+            content = msg.content.strip()
             
-            def check(m):
-                return m.channel.id == thread.id and not m.author.bot
+            if content.lower() == 'done' or content.lower() == 'confirm':
+                break
             
-            try:
-                msg = await bot.wait_for('message', check=check, timeout=300)
-                content = msg.content.strip()
-                
-                if content.lower() == 'skip':
-                    continue
-                
-                if content.lower() == 'auto':
-                    await thread.send("Paste the text/email snippet below:")
-                    snippet_msg = await bot.wait_for('message', check=check, timeout=300)
-                    # AI Call
-                    extraction = await asyncio.to_thread(call_ollama_extract, snippet_msg.content)
-                    val = extraction.model_dump(by_alias=True).get(field, "")
-                    if val:
-                        row[field] = val
-                        await thread.send(f"💡 AI extracted: `{val}`")
-                    else:
-                        await thread.send("⚠️ AI couldn't find it. Skipping.")
+            if ":" in content:
+                key, val = content.split(":", 1)
+                key = key.strip()
+                val = val.strip()
+                # Fuzzy match key to headers
+                matches = difflib.get_close_matches(key, list(CSV_HEADERS), n=1, cutoff=0.6)
+                if matches:
+                    row[matches[0]] = val
+                    await thread.send(f"✅ Set `{matches[0]}` to `{val}`")
                 else:
-                    row[field] = content
-                    
-            except asyncio.TimeoutError:
-                await thread.send("⏱ Timeout. Stopping review.")
-                return
+                    await thread.send(f"❓ Could not find field matching `{key}`")
+            else:
+                await thread.send("Type `field: value` to update a field, or `done` to finish.")
+                
+        except asyncio.TimeoutError:
+            await thread.send("⏱ Timeout.")
+            return
 
-    # Show Summary & Finalize Button
-    embed = discord.Embed(title="Final Review", description="Check the details below before publishing.", color=0x00ff00)
+    # Final review embed
+    embed = discord.Embed(title="Final Review", color=0x2ecc71)
     for k, v in row.items():
-        if v: embed.add_field(name=k, value=v, inline=True)
-        
-    await thread.send(embed=embed, view=FinalizeView(filepath, row))
-
+        if v and k not in WORKFLOW_FIELDS:
+            embed.add_field(name=k, value=v, inline=True)
+    
+    needs_cal = True if action_type == "appended" else (changelog.get("needs_calendar_update") if changelog else False)
+    await thread.send(embed=embed, view=FinalizeView(filepath, row, action_type, needs_cal))
 
 # ------------------------------------------------------------------
 # Bot Setup
@@ -403,6 +728,82 @@ def save_state():
     except Exception as e:
         logger.error(f"Failed to save state: {e}")
 
+# ------------------------------------------------------------------
+# Command Interface (Stage 7)
+# ------------------------------------------------------------------
+
+@bot.group(name="calbot", invoke_without_command=True)
+async def calbot_cmd(ctx):
+    """CALBOT base command."""
+    await ctx.send("Usage: `!calbot status`, `!calbot process <file>`, `!calbot merge`")
+
+@calbot_cmd.command(name="status")
+async def calbot_status(ctx):
+    """Show pending reviews and stats."""
+    pending = list(BITS_DIR.glob("*.csv"))
+    master_count = 0
+    if MASTER_CSV.exists():
+        with open(MASTER_CSV, "r") as f:
+            master_count = sum(1 for line in f) - 1
+            
+    embed = discord.Embed(title="CALBOT Status", color=0x3498db)
+    embed.add_field(name="Pending Reviews", value=len(pending), inline=True)
+    embed.add_field(name="Master Gigs", value=master_count, inline=True)
+    await ctx.send(embed=embed)
+
+@calbot_cmd.command(name="merge")
+async def calbot_merge(ctx):
+    """Manually trigger folder watch."""
+    await ctx.send("Checking `Outputs/Bits` for new contracts...")
+    await watch_folder()
+
+def get_mapbot_module():
+    spec = importlib.util.spec_from_file_location("mapbot", ROOT_DIR / "AI-tinerary-MAPBOT.py")
+    mapbot = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mapbot)
+    return mapbot
+
+# ------------------------------------------------------------------
+# MAPBOT Commands
+# ------------------------------------------------------------------
+
+@bot.group(name="mapbot", invoke_without_command=True)
+async def mapbot_cmd(ctx):
+    """MAPBOT base command."""
+    await ctx.send("Usage: `!mapbot status`, `!mapbot route all`, `!mapbot base <address>`")
+
+@mapbot_cmd.command(name="status")
+async def mapbot_status(ctx):
+    """Show gigs needing routing."""
+    mapbot = get_mapbot_module()
+    gigs = mapbot.get_sorted_gigs()
+    pending = [g for g in gigs if not g.get("Routing") or not g.get("Mileage")]
+    
+    embed = discord.Embed(title="MAPBOT Status", color=0xe67e22)
+    embed.add_field(name="Gigs Needing Routing", value=len(pending), inline=True)
+    if pending:
+        list_str = "\n".join([f"- {g['Starting Date']}: {g['Venue']}" for g in pending[:10]])
+        embed.add_field(name="Next Gigs", value=list_str, inline=False)
+    await ctx.send(embed=embed)
+
+@mapbot_cmd.command(name="route")
+async def mapbot_route(ctx, arg="all"):
+    """Trigger routing calculation."""
+    await ctx.send("🚚 MAPBOT is recalculating routes...")
+    mapbot = get_mapbot_module()
+    gigs = mapbot.get_sorted_gigs()
+    updated = False
+    for gig in gigs:
+        if arg == "all" or arg in gig.get("Starting Date", ""):
+            if await mapbot.plan_route_for_gig(gig, gigs):
+                updated = True
+    
+    if updated:
+        mapbot.update_master_csv_atomic(gigs)
+        await ctx.send("✅ Routing updates complete and saved to master CSV.")
+    else:
+        await ctx.send("ℹ️ No updates needed or routing failed for requested gigs.")
+
 @bot.event
 async def on_ready():
     logger.info(f"Bot logged in as {bot.user}")
@@ -414,41 +815,54 @@ async def on_ready():
 async def watch_folder():
     """Poller to check for new CSVs."""
     if not DISCORD_CHANNEL_ID or not str(DISCORD_CHANNEL_ID).isdigit():
-        logger.warning("DISCORD_CHANNEL_ID is not set or invalid in Master Config.txt. Skipping watch loop.")
         return
         
     channel = bot.get_channel(int(DISCORD_CHANNEL_ID))
-    if not channel:
-        logger.warning(f"Could not find channel {DISCORD_CHANNEL_ID}. Ensure the bot has access.")
-        return
+    if not channel: return
 
     found_new = False
-    # Check Bits folder
+    # Read master rows for matching
+    master_rows = []
+    if MASTER_CSV.exists():
+        with open(MASTER_CSV, "r", newline="", encoding="utf-8") as f:
+            master_rows = list(csv.DictReader(f))
+
     for csv_file in BITS_DIR.glob("*.csv"):
         if csv_file.name in notified_files:
             continue
             
-        row = read_csv_row(csv_file)
-        if not row: continue
+        new_row = read_csv_row(csv_file)
+        if not new_row: continue
 
-        venue = row.get("Venue") or "Unknown Venue"
-        date = row.get("Starting Date") or "Unknown Date"
-        missing_count = sum(1 for k, v in row.items() if not v and k not in ["Calendar Start", "Calendar End", "Est. Mileage"])
+        # Stage 1: Match
+        row_index = find_matching_row(master_rows, new_row)
+        action_type = "appended"
+        changelog = None
+        
+        if row_index >= 0:
+            action_type = "updated"
+            old_row = master_rows[row_index]
+            merged = merge_fields(old_row, new_row)
+            changelog = generate_changelog(old_row, merged)
+            if not changelog:
+                # No changes, mark as notified and skip
+                notified_files.add(csv_file.name)
+                continue
+
+        venue = new_row.get("Venue") or "Unknown Venue"
+        date = new_row.get("Starting Date") or "Unknown Date"
         
         embed = discord.Embed(
-            title="📄 New Contract Processed",
-            description=f"**File:** `{csv_file.name}`\n**Gig:** {venue} on {date}",
-            color=0xf1c40f
+            title="📄 New Contract" if action_type == "appended" else "📝 Update Detected",
+            description=f"**Gig:** {venue} on {date}",
+            color=0xf1c40f if action_type == "appended" else 0x3498db
         )
-        embed.add_field(name="Status", value=f"{missing_count} missing fields", inline=True)
-        embed.set_footer(text="Click below to review and finalize.")
+        if changelog:
+            embed.add_field(name="Changes", value=f"{len(changelog['changed_fields'])} fields", inline=True)
         
-        try:
-            await channel.send(embed=embed, view=ReviewView(csv_file))
-            notified_files.add(csv_file.name)
-            found_new = True
-        except Exception as e:
-            logger.error(f"Failed to send notification for {csv_file.name}: {e}")
+        await channel.send(embed=embed, view=ReviewView(csv_file, action_type, changelog))
+        notified_files.add(csv_file.name)
+        found_new = True
 
     if found_new:
         save_state()
@@ -456,9 +870,5 @@ async def watch_folder():
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
         logger.error("DISCORD_BOT_TOKEN missing in Master Config.txt")
-        print("CRITICAL: Please set DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID in Master Config.txt")
     else:
-        try:
-            bot.run(DISCORD_TOKEN)
-        except Exception as e:
-            logger.error(f"Bot failed to run: {e}")
+        bot.run(DISCORD_TOKEN)

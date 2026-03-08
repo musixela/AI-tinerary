@@ -156,7 +156,11 @@ def get_driving_miles(dest_coords, origin_coords):
     return ""
 
 def process_mileage(data: ContractData):
-    """Coordinate the Geocoding and Routing workflow with fallbacks."""
+    """
+    [DEPRECATED FALLBACK] Coordinates the Geocoding and Routing workflow.
+    MAPBOT now handles advanced routing and logistics. This is kept as a local
+    estimate for initial extraction.
+    """
     # 1. Resolve Home Base
     origin_coords = get_coords(HOME_BASE_ADDRESS)
     if not origin_coords:
