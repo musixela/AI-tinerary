@@ -26,6 +26,11 @@ from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
 from dotenv import load_dotenv
 
+# Import constants
+from constants import (
+    ROOT_DIR, OUTPUTS_DIR, MASTER_CSV, BACKUPS_DIR, ALL_HEADERS, get_master_lock
+)
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -33,11 +38,6 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------
 # Configuration & Paths
 # ------------------------------------------------------------------
-
-ROOT_DIR = Path(__file__).resolve().parent
-OUTPUTS_DIR = ROOT_DIR / "Outputs"
-MASTER_CSV = OUTPUTS_DIR / "master-output.csv"
-BACKUPS_DIR = OUTPUTS_DIR / "Backups"
 
 # Load Config
 load_dotenv(override=True)
@@ -54,15 +54,25 @@ geolocator = Nominatim(user_agent="ai-tinerary-mapbot")
 # Routing Utilities (Ported/Enhanced from CSV Script)
 # ------------------------------------------------------------------
 
-def get_coords(address: str):
-    """Resolve an address to [longitude, latitude] using Nominatim."""
-    if not address or str(address).strip() == "": return None
-    try:
-        location = geolocator.geocode(address, timeout=10)
-        if location:
-            return [location.longitude, location.latitude]
-    except Exception as e:
-        logger.error(f"Geocoding error for '{address}': {e}")
+def get_coords(address: str, venue: str = None, location: str = None):
+    """
+    Resolve an address to [longitude, latitude] using Nominatim.
+    Implements fallbacks for venue and location.
+    """
+    queries = []
+    if address: queries.append(address)
+    if venue and location: queries.append(f"{venue}, {location}")
+    if venue: queries.append(venue)
+    
+    for query in queries:
+        if not query or str(query).strip() == "": continue
+        try:
+            location_res = geolocator.geocode(query, timeout=10)
+            if location_res:
+                logger.info(f"Resolved '{query}' to [{location_res.longitude}, {location_res.latitude}]")
+                return [location_res.longitude, location_res.latitude]
+        except Exception as e:
+            logger.error(f"Geocoding error for '{query}': {e}")
     return None
 
 def get_driving_data(dest_coords, origin_coords):
@@ -133,9 +143,11 @@ def get_previous_gig(gigs, current_gig):
 async def plan_route_for_gig(gig, gigs):
     """
     1. Determine Origin (Prev gig or Home Base)
-    2. Geocode Addresses
+    2. Geocode Addresses (with Fallbacks)
     3. Calculate Route/Mileage/ETA
-    4. Store in Routing/Mileage fields
+    4. Apply Dynamic Buffer (15m per 2h)
+    5. Detect Conflicts with Previous Gig
+    6. Store in Routing/Mileage fields
     """
     prev_gig = get_previous_gig(gigs, gig)
     
@@ -153,12 +165,15 @@ async def plan_route_for_gig(gig, gigs):
 
     dest_name = gig.get("Venue")
     dest_address = gig.get("Address") or gig.get("Location")
+    dest_loc = gig.get("Location")
     
     logger.info(f"Routing for {dest_name}: {origin_name} -> {dest_name}")
     
+    # 2. Geocode with Fallbacks
     origin_coords = get_coords(origin_address)
-    dest_coords = get_coords(dest_address)
+    dest_coords = get_coords(dest_address, venue=dest_name, location=dest_loc)
     
+    # 3. Get Data
     miles, duration = get_driving_data(dest_coords, origin_coords)
     
     if miles is not None:
@@ -166,24 +181,40 @@ async def plan_route_for_gig(gig, gigs):
         routing_str = f"{origin_name} -> {dest_name}"
         
         if duration:
-            hours = int(duration // 3600)
-            minutes = int((duration % 3600) // 60)
-            routing_str += f" ({hours}h {minutes}m)"
+            hours_drive = duration / 3600
+            # 4. Dynamic Buffer: 15 mins per 2 hours
+            buffer_mins = int((hours_drive / 2.0) * 15)
+            # Minimum 15m buffer if > 0
+            if hours_drive > 0: buffer_mins = max(15, buffer_mins)
             
-            # Calculate departure time if Load In exists
+            total_duration_with_buffer = duration + (buffer_mins * 60)
+            
+            h = int(duration // 3600)
+            m = int((duration % 3600) // 60)
+            routing_str += f" ({h}h {m}m)"
+            
+            # 5. Conflict Detection
+            from dateutil import parser
             load_in_str = gig.get("Load In")
             if load_in_str:
                 try:
-                    # Simple parser for "HH:MM" or "HH:MM AM/PM"
-                    from dateutil import parser
-                    load_in_time = parser.parse(load_in_str)
-                    departure_time = load_in_time - timedelta(seconds=duration)
-                    # Add buffer (e.g., 30 mins)
-                    departure_time -= timedelta(minutes=30)
+                    load_in_time = parser.parse(f"{gig.get('Starting Date')} {load_in_str}")
+                    departure_time = load_in_time - timedelta(seconds=total_duration_with_buffer)
+                    
+                    # Check against prev gig end
+                    if prev_gig:
+                        prev_end_str = prev_gig.get("Calendar End")
+                        if prev_end_str:
+                            prev_end_dt = parser.parse(prev_end_str)
+                            if departure_time < prev_end_dt:
+                                warning = f"\n[CRITICAL WARNING: Drive time ({h}h {m}m + {buffer_mins}m buffer) exceeds available window!]"
+                                if warning not in gig.get("Other Details", ""):
+                                    gig["Other Details"] = (gig.get("Other Details", "") + warning).strip()
+                    
                     gig["Other Details"] = (gig.get("Other Details", "") + 
-                        f"\n[MAPBOT]: Recommended Departure: {departure_time.strftime('%I:%M %p')} (includes 30m buffer)").strip()
-                except:
-                    pass
+                        f"\n[MAPBOT]: Recommended Departure: {departure_time.strftime('%I:%M %p')} (includes {buffer_mins}m dynamic buffer)").strip()
+                except Exception as e:
+                    logger.warning(f"Conflict detection failed for {dest_name}: {e}")
         
         gig["Routing"] = routing_str
         return True
@@ -195,29 +226,24 @@ async def plan_route_for_gig(gig, gigs):
 # ------------------------------------------------------------------
 
 def update_master_csv_atomic(rows):
-    """Atomically update master CSV."""
-    if MASTER_CSV.exists():
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup_path = BACKUPS_DIR / f"master-output-mapbot-{timestamp}.csv"
-        shutil.copy(MASTER_CSV, backup_path)
+    """Atomically update master CSV with File Locking."""
+    with get_master_lock():
+        if MASTER_CSV.exists():
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup_path = BACKUPS_DIR / f"master-output-mapbot-{timestamp}.csv"
+            shutil.copy(MASTER_CSV, backup_path)
 
-    # We need the full headers from CALBOT
-    spec = importlib.util.spec_from_file_location("calbot", ROOT_DIR / "AI-tinerary-CALBOT.py")
-    calbot = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(calbot)
-    fieldnames = calbot.ALL_HEADERS
-
-    temp_csv = MASTER_CSV.with_suffix(".tmp")
-    try:
-        with open(temp_csv, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-            writer.writeheader()
-            writer.writerows(rows)
-        temp_csv.replace(MASTER_CSV)
-        return True
-    except Exception as e:
-        logger.error(f"Failed to update master CSV: {e}")
-        return False
+        temp_csv = MASTER_CSV.with_suffix(".tmp")
+        try:
+            with open(temp_csv, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=ALL_HEADERS, extrasaction='ignore')
+                writer.writeheader()
+                writer.writerows(rows)
+            temp_csv.replace(MASTER_CSV)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update master CSV: {e}")
+            return False
 
 # ------------------------------------------------------------------
 # Bot Interaction Glue

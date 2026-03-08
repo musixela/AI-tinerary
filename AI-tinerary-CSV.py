@@ -24,10 +24,13 @@ import requests
 from pypdf import PdfReader
 import openrouteservice
 from geopy.geocoders import Nominatim
-from geopy.exc import GeopyError
 from geopy.distance import geodesic
-from pydantic import BaseModel, Field, ValidationError, ConfigDict
 from dotenv import load_dotenv
+
+from constants import (
+    ROOT_DIR, CONTRACTS_DIR, OUTPUTS_DIR, BITS_DIR, COMPLETE_DIR,
+    ContractData, CSV_HEADERS, get_master_lock
+)
 
 # ------------- CONFIGURATION & SETUP -------------
 
@@ -37,12 +40,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
-
-ROOT_DIR = Path(__file__).resolve().parent
-CONTRACTS_DIR = ROOT_DIR / "Contracts" / "Incoming"
-OUTPUTS_DIR = ROOT_DIR / "Outputs"
-BITS_DIR = OUTPUTS_DIR / "Bits"
-COMPLETE_DIR = ROOT_DIR / "Contracts" / "Complete"
 
 # Load Master Config.txt with absolute priority
 config_file = ROOT_DIR / "Master Config.txt"
@@ -69,38 +66,6 @@ logger.info(f"HOME_BASE: '{HOME_BASE_ADDRESS}'")
 
 # Initialize Geocoder
 geolocator = Nominatim(user_agent="ai-tinerary-tour-manager")
-
-# ------------- SCHEMA VALIDATION -------------
-
-class ContractData(BaseModel):
-    """Pydantic model to strictly enforce the output schema and defaults."""
-    model_config = ConfigDict(populate_by_name=True)
-
-    starting_date: str = Field(default="", alias="Starting Date")
-    ending_date: str = Field(default="", alias="Ending Date")
-    venue: str = Field(default="", alias="Venue")
-    location: str = Field(default="", alias="Location")
-    booking: str = Field(default="FALSE", alias="Booking")
-    mgmt: str = Field(default="FALSE", alias="MGMT")
-    door_deal: str = Field(default="FALSE", alias="Door Deal")
-    dd_notes: str = Field(default="", alias="DD Notes")
-    hospitality: str = Field(default="", alias="Hospitality")
-    contact_name: str = Field(default="", alias="Contact Name")
-    contact_details: str = Field(default="", alias="Contact Details")
-    other_details: str = Field(default="", alias="Other Details")
-    address: str = Field(default="", alias="Address")
-    accommodations: str = Field(default="", alias="Accomodations")
-    accom_address: str = Field(default="", alias="Accom Address")
-    est_mileage: str = Field(default="", alias="Est. Mileage")
-    time: str = Field(default="", alias="Time")
-    doors: str = Field(default="", alias="Doors")
-    load_in: str = Field(default="", alias="Load In")
-    pay: str = Field(default="", alias="Pay")
-    sound_person: str = Field(default="", alias="Sound - Person")
-    sound_system: str = Field(default="", alias="Sound - System")
-    other_expenses: str = Field(default="", alias="Other Expenses")
-
-CSV_HEADERS = [ContractData.model_fields[k].alias or k for k in ContractData.model_fields.keys()]
 
 # ------------- SERVICES & LOGIC -------------
 

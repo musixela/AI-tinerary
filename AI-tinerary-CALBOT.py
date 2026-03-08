@@ -29,32 +29,23 @@ import importlib.util
 import requests
 from dotenv import load_dotenv
 
+# Import constants
+from constants import (
+    ROOT_DIR, OUTPUTS_DIR, BITS_DIR, PROCESSED_DIR, MASTER_CSV,
+    STATE_FILE, BACKUPS_DIR, LOGS_DIR, ALL_HEADERS, CSV_HEADERS,
+    WORKFLOW_FIELDS, get_master_lock
+)
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 # Suppress noisy libraries
-class _VoiceFilter(logging.Filter):
-    def filter(self, record):
-        msg = record.getMessage()
-        return not ("PyNaCl is not installed" in msg or "davey is not installed" in msg)
-logging.getLogger().addFilter(_VoiceFilter())
-logging.getLogger('discord').setLevel(logging.CRITICAL)
-logging.getLogger('discord.voice_client').setLevel(logging.CRITICAL)
+logging.getLogger('discord').setLevel(logging.WARNING)
+logging.getLogger('discord.voice_client').setLevel(logging.ERROR)
 
-# Import discord safely
-import sys
-_orig_stdout = sys.stdout
-_orig_stderr = sys.stderr
-with open(os.devnull, 'w') as devnull:
-    sys.stdout = devnull
-    sys.stderr = devnull
-    try:
-        import discord
-        from discord.ext import commands, tasks
-    finally:
-        sys.stdout = _orig_stdout
-        sys.stderr = _orig_stderr
+import discord
+from discord.ext import commands, tasks
 
 # Google Calendar Imports
 from google.oauth2.service_account import Credentials
@@ -63,20 +54,6 @@ from googleapiclient.discovery import build
 # ------------------------------------------------------------------
 # Configuration & Paths
 # ------------------------------------------------------------------
-
-ROOT_DIR = Path(__file__).resolve().parent
-OUTPUTS_DIR = ROOT_DIR / "Outputs"
-BITS_DIR = OUTPUTS_DIR / "Bits"
-PROCESSED_DIR = BITS_DIR / "Processed"
-MASTER_CSV = OUTPUTS_DIR / "master-output.csv"
-STATE_FILE = OUTPUTS_DIR / "bot_state.json"
-BACKUPS_DIR = OUTPUTS_DIR / "Backups"
-LOGS_DIR = ROOT_DIR / "Logs"
-
-# Ensure directories exist
-PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
-LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Load Config
 load_dotenv(override=True)
@@ -94,34 +71,11 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b")
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
-# Import headers from CSV script to ensure consistency
+# Import extraction logic from CSV script
 _csv_spec = importlib.util.spec_from_file_location("aitin_csv", ROOT_DIR / "AI-tinerary-CSV.py")
 _ai_csv = importlib.util.module_from_spec(_csv_spec)
 _csv_spec.loader.exec_module(_ai_csv)
-CSV_HEADERS = _ai_csv.CSV_HEADERS
 call_ollama_extract = _ai_csv.call_ollama_extract
-
-# CALBOT workflow fields
-WORKFLOW_FIELDS = [
-    "Discord Finished",
-    "Calendar Created",
-    "Public Calendar Created",
-    "Routing",
-    "Mileage"
-]
-
-# Ensure MASTER_CSV headers include workflow fields
-def get_all_headers():
-    headers = list(CSV_HEADERS)
-    for f in WORKFLOW_FIELDS:
-        if f not in headers:
-            headers.append(f)
-    # Also add the calendar start/end fields used by the original bot
-    if "Calendar Start" not in headers: headers.append("Calendar Start")
-    if "Calendar End" not in headers: headers.append("Calendar End")
-    return headers
-
-ALL_HEADERS = get_all_headers()
 
 # ------------------------------------------------------------------
 # Stage 1: Row Matching
@@ -278,72 +232,74 @@ def generate_changelog(old: dict, merged: dict) -> dict:
 
 def update_master_csv(new_row: dict, source_file: str) -> dict:
     """
-    Atomic write process:
-    1. Backup master CSV
-    2. Load current rows
-    3. Match & Merge
-    4. Write temp & rename
-    5. Log action
+    Atomic write process with File Locking:
+    1. Lock master CSV
+    2. Backup master CSV
+    3. Load current rows
+    4. Match & Merge
+    5. Write temp & rename
+    6. Log action
     """
-    # 1. Backup
-    if MASTER_CSV.exists():
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup_path = BACKUPS_DIR / f"master-output-{timestamp}.csv"
-        shutil.copy(MASTER_CSV, backup_path)
+    with get_master_lock():
+        # 2. Backup
+        if MASTER_CSV.exists():
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup_path = BACKUPS_DIR / f"master-output-{timestamp}.csv"
+            shutil.copy(MASTER_CSV, backup_path)
 
-    # 2. Load
-    master_rows = []
-    if MASTER_CSV.exists():
-        try:
-            with open(MASTER_CSV, "r", newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                master_rows = list(reader)
-        except Exception as e:
-            logger.error(f"Failed to read master CSV: {e}")
+        # 3. Load
+        master_rows = []
+        if MASTER_CSV.exists():
+            try:
+                with open(MASTER_CSV, "r", newline="", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    master_rows = list(reader)
+            except Exception as e:
+                logger.error(f"Failed to read master CSV: {e}")
 
-    # 3. Match
-    row_index = find_matching_row(master_rows, new_row)
-    
-    action = "appended"
-    changelog = None
-    needs_mapbot = False
-    needs_calendar_update = False
-    merged_row = new_row.copy()
-
-    if row_index >= 0:
-        action = "updated"
-        old_row = master_rows[row_index]
-        merged_row = merge_fields(old_row, new_row)
-        changelog = generate_changelog(old_row, merged_row)
+        # 4. Match
+        row_index = find_matching_row(master_rows, new_row)
         
-        if changelog:
-            needs_mapbot = changelog.get("needs_mapbot", False)
-            needs_calendar_update = changelog.get("needs_calendar_update", False)
+        action = "appended"
+        changelog = None
+        needs_mapbot = False
+        needs_calendar_update = False
+        merged_row = new_row.copy()
+
+        if row_index >= 0:
+            action = "updated"
+            old_row = master_rows[row_index]
+            merged_row = merge_fields(old_row, new_row)
+            changelog = generate_changelog(old_row, merged_row)
+            
+            if changelog:
+                needs_mapbot = changelog.get("needs_mapbot", False)
+                needs_calendar_update = changelog.get("needs_calendar_update", False)
+            else:
+                # No changes detected
+                action = "ignored"
+            
+            master_rows[row_index] = merged_row
         else:
-            # No changes detected
-            action = "ignored"
-        
-        master_rows[row_index] = merged_row
-    else:
-        # Append new row, ensure all headers are present
-        full_new_row = {h: "" for h in ALL_HEADERS}
-        full_new_row.update(new_row)
-        master_rows.append(full_new_row)
-        merged_row = full_new_row
+            # Append new row, ensure all headers are present
+            full_new_row = {h: "" for h in ALL_HEADERS}
+            full_new_row.update(new_row)
+            master_rows.append(full_new_row)
+            merged_row = full_new_row
 
-    # 4. Write
-    temp_csv = MASTER_CSV.with_suffix(".tmp")
-    try:
-        with open(temp_csv, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=ALL_HEADERS, extrasaction='ignore')
-            writer.writeheader()
-            writer.writerows(master_rows)
-        temp_csv.replace(MASTER_CSV)
-    except Exception as e:
-        logger.error(f"Failed to write master CSV: {e}")
-        return {"action": "failed", "error": str(e)}
+        # 5. Write
+        temp_csv = MASTER_CSV.with_suffix(".tmp")
+        try:
+            with open(temp_csv, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=ALL_HEADERS, extrasaction='ignore')
+                writer.writeheader()
+                writer.writerows(master_rows)
+            temp_csv.replace(MASTER_CSV)
+        except Exception as e:
+            logger.error(f"Failed to write master CSV: {e}")
+            return {"action": "failed", "error": str(e)}
 
-    # 5. Log Action
+    # 6. Log Action
     log_entry = {
         "timestamp": datetime.now().isoformat(),
         "source": source_file,
@@ -479,9 +435,7 @@ def infer_calendar_datetimes(row: dict):
 def create_calendar_events(row: dict, needs_update: bool = False):
     """
     Creates or updates events on configured calendars.
-    If needs_update is True, it should ideally find and update/replace existing events.
-    For simplicity in this V1, if Calendar Created is True, we could try to delete old ones if we had IDs.
-    Since we don't store IDs yet, we'll just create new ones or mention updates.
+    Uses events().update() if Event IDs are present.
     """
     if not GOOGLE_SERVICE_ACCOUNT_FILE:
         return ["⚠️ Google Calendar not configured (no service account)."]
@@ -521,9 +475,14 @@ def create_calendar_events(row: dict, needs_update: bool = False):
     # 1. Band Calendar (Private)
     if BAND_CALENDAR_ID:
         try:
-            # TODO: In a more advanced version, store event ID in CSV to enable true updates
-            e = service.events().insert(calendarId=BAND_CALENDAR_ID, body=event_body).execute()
-            results.append(f"✅ Band Calendar: [Link]({e.get('htmlLink')})")
+            event_id = row.get("Band Event ID")
+            if event_id:
+                e = service.events().update(calendarId=BAND_CALENDAR_ID, eventId=event_id, body=event_body).execute()
+                results.append(f"🔄 Band Calendar Updated: [Link]({e.get('htmlLink')})")
+            else:
+                e = service.events().insert(calendarId=BAND_CALENDAR_ID, body=event_body).execute()
+                results.append(f"✅ Band Calendar Created: [Link]({e.get('htmlLink')})")
+                row["Band Event ID"] = e.get("id")
             row["Calendar Created"] = "True"
         except Exception as e:
             results.append(f"❌ Band Cal Error: {e}")
@@ -533,8 +492,14 @@ def create_calendar_events(row: dict, needs_update: bool = False):
         try:
             pub_body = event_body.copy()
             pub_body["description"] = public_desc
-            e = service.events().insert(calendarId=PUBLIC_CALENDAR_ID, body=pub_body).execute()
-            results.append(f"✅ Public Calendar: [Link]({e.get('htmlLink')})")
+            event_id = row.get("Public Event ID")
+            if event_id:
+                e = service.events().update(calendarId=PUBLIC_CALENDAR_ID, eventId=event_id, body=pub_body).execute()
+                results.append(f"🔄 Public Calendar Updated: [Link]({e.get('htmlLink')})")
+            else:
+                e = service.events().insert(calendarId=PUBLIC_CALENDAR_ID, body=pub_body).execute()
+                results.append(f"✅ Public Calendar Created: [Link]({e.get('htmlLink')})")
+                row["Public Event ID"] = e.get("id")
             row["Public Calendar Created"] = "True"
         except Exception as e:
             results.append(f"❌ Public Cal Error: {e}")
@@ -862,10 +827,8 @@ async def watch_folder():
         
         await channel.send(embed=embed, view=ReviewView(csv_file, action_type, changelog))
         notified_files.add(csv_file.name)
-        found_new = True
-
-    if found_new:
         save_state()
+        found_new = True
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN:

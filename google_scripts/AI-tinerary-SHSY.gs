@@ -1,117 +1,102 @@
+/**
+ * AI-tinerary: Google Sheets Sync (SHSY)
+ * 
+ * Logic: "Upsert" based on Starting Date + Venue composite key.
+ * This preserves manual formatting and extra columns/notes.
+ */
+
 // === CONFIG ===
-// The ID of the Drive Folder where master-output.csv is synced.
-// You can use the full URL or just the ID.
-// Example: https://drive.google.com/drive/folders/XXXXXXXX
 var SYNC_DRIVE_FOLDER_ID = 'PASTE_DRIVE_FOLDER_ID_HERE';
-
-// The ID of the Google Sheet to sync to.
-// Example: https://docs.google.com/spreadsheets/d/1vYnSXXXXXXXXXXXXXXXX/edit
 var TARGET_SPREADSHEET_ID = 'PASTE_TARGET_SPREADSHEET_ID_HERE';
-
-// Name of the CSV file expected in Google Drive
 var MASTER_CSV_NAME = 'master-output.csv';
-
-// Name of the tab in the Spreadsheet to write to
 var TARGET_SHEET_NAME = 'Master Output';
 
-/**
- * Main function to sync the master-output.csv from Google Drive 
- * into a specific Google Sheet.
- */
 function syncMasterToSheets() {
-  // 1. Resolve Folder
+  // 1. Resolve CSV File
   var folderId = extractId(SYNC_DRIVE_FOLDER_ID);
-  var folder;
-  try {
-    folder = DriveApp.getFolderById(folderId);
-  } catch (e) {
-    Logger.log('Error finding folder: ' + e.message);
-    return;
-  }
-
-  // 2. Find CSV file
+  var folder = DriveApp.getFolderById(folderId);
   var files = folder.getFilesByName(MASTER_CSV_NAME);
-  if (!files.hasNext()) {
-    Logger.log('No file found with name: ' + MASTER_CSV_NAME);
-    return;
-  }
-
+  if (!files.hasNext()) return;
   var file = files.next();
   
-  // 3. Parse CSV Data
+  // 2. Parse CSV
   var csvString = file.getBlob().getDataAsString();
-  var csvData;
-  try {
-    csvData = Utilities.parseCsv(csvString);
-  } catch (e) {
-    Logger.log('Error parsing CSV: ' + e.message);
-    return;
-  }
-  
-  if (!csvData || csvData.length === 0) {
-    Logger.log('CSV data is empty.');
-    return;
-  }
+  var csvData = Utilities.parseCsv(csvString);
+  if (!csvData || csvData.length < 2) return; // Header + at least one row
 
-  // 4. Resolve Spreadsheet
-  var ssId = extractId(TARGET_SPREADSHEET_ID);
-  var ss;
-  try {
-    ss = SpreadsheetApp.openById(ssId);
-  } catch (e) {
-    Logger.log('Error opening Spreadsheet: ' + e.message);
+  var headers = csvData[0];
+  var dateIdx = headers.indexOf('Starting Date');
+  var venueIdx = headers.indexOf('Venue');
+
+  if (dateIdx === -1 || venueIdx === -1) {
+    Logger.log('Error: Starting Date or Venue column missing in CSV.');
     return;
   }
 
-  // 5. Resolve Sheet (Tab)
-  var sheet = ss.getSheetByName(TARGET_SHEET_NAME);
-  if (!sheet) {
-    sheet = ss.insertSheet(TARGET_SHEET_NAME);
-    Logger.log('Created new sheet: ' + TARGET_SHEET_NAME);
+  // 3. Resolve Spreadsheet & Sheet
+  var ss = SpreadsheetApp.openById(extractId(TARGET_SPREADSHEET_ID));
+  var sheet = ss.getSheetByName(TARGET_SHEET_NAME) || ss.insertSheet(TARGET_SHEET_NAME);
+
+  // 4. Load Existing Data from Sheet
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  var sheetData = lastRow > 0 ? sheet.getRange(1, 1, lastRow, Math.max(lastCol, headers.length)).getValues() : [];
+  
+  // Map existing rows by Date + Venue
+  var sheetMap = {};
+  var sheetHeaders = [];
+  if (sheetData.length > 0) {
+    sheetHeaders = sheetData[0];
+    var sDateIdx = sheetHeaders.indexOf('Starting Date');
+    var sVenueIdx = sheetHeaders.indexOf('Venue');
+    
+    for (var i = 1; i < sheetData.length; i++) {
+      var key = sheetData[i][sDateIdx] + '|' + sheetData[i][sVenueIdx];
+      sheetMap[key] = i + 1; // 1-based row index
+    }
+  } else {
+    // Initial setup: write headers
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheetHeaders = headers;
   }
 
-  // 6. Write Data
-  // Clear existing content and write new data from the top
-  sheet.clear();
-  sheet.getRange(1, 1, csvData.length, csvData[0].length).setValues(csvData);
-  
-  Logger.log('Sync complete. ' + csvData.length + ' rows synced to ' + TARGET_SHEET_NAME);
-}
+  // 5. Upsert Logic
+  for (var j = 1; j < csvData.length; j++) {
+    var row = csvData[j];
+    var key = row[dateIdx] + '|' + row[venueIdx];
+    
+    // Prepare row for writing (match sheet column order)
+    var writeRow = [];
+    for (var k = 0; k < sheetHeaders.length; k++) {
+      var headerName = sheetHeaders[k];
+      var csvColIdx = headers.indexOf(headerName);
+      if (csvColIdx !== -1) {
+        writeRow.push(row[csvColIdx]);
+      } else {
+        writeRow.push(null); // Preserve manual columns
+      }
+    }
 
-/**
- * Helper to extract ID from a full Google Drive/Docs URL if provided.
- */
-function extractId(input) {
-  if (input.indexOf('http') === -1) return input; // Already an ID
-  
-  // Try folders pattern
-  if (input.indexOf('folders/') !== -1) {
-    return input.split('folders/')[1].split('/')[0].split('?')[0];
-  }
-  
-  // Try spreadsheets pattern
-  if (input.indexOf('/d/') !== -1) {
-    return input.split('/d/')[1].split('/')[0].split('?')[0];
-  }
-  
-  return input;
-}
-
-/**
- * (Optional) Create a time-based trigger to run this every hour.
- */
-function createSyncTrigger() {
-  // Check if trigger already exists
-  var triggers = ScriptApp.getProjectTriggers();
-  for (var i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === 'syncMasterToSheets') {
-      return;
+    if (sheetMap[key]) {
+      // Update existing row (only overwrite columns present in CSV)
+      var targetRow = sheetMap[key];
+      for (var col = 0; col < writeRow.length; col++) {
+        if (writeRow[col] !== null) {
+          sheet.getRange(targetRow, col + 1).setValue(writeRow[col]);
+        }
+      }
+    } else {
+      // Append new row
+      sheet.appendRow(writeRow);
     }
   }
   
-  // Create trigger for every hour
-  ScriptApp.newTrigger('syncMasterToSheets')
-    .timeBased()
-    .everyHours(1)
-    .create();
+  Logger.log('Sync complete.');
+}
+
+function extractId(input) {
+  if (input.indexOf('http') === -1) return input;
+  if (input.indexOf('folders/') !== -1) return input.split('folders/')[1].split('/')[0].split('?')[0];
+  if (input.indexOf('/d/') !== -1) return input.split('/d/')[1].split('/')[0].split('?')[0];
+  return input;
 }
