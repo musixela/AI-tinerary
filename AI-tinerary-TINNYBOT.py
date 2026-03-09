@@ -15,11 +15,16 @@ import requests
 
 import discord
 from discord.ext import commands
+from dotenv import load_dotenv
 
-from constants import MASTER_CSV, ITINERARIES_DIR
+from constants import MASTER_CSV, ITINERARIES_DIR, ROOT_DIR
 import os
 
 logger = logging.getLogger(__name__)
+
+# Load environment variables
+load_dotenv(override=True)
+load_dotenv(dotenv_path=ROOT_DIR / "Master Config.txt", override=True)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b")
@@ -96,6 +101,11 @@ Format as a clean Markdown bulleted list. Keep it fun but highly practical. Do n
                     dt = parser.parse(time_str)
                 else:
                     dt = parser.parse(f"{date_str} {time_str}")
+                    # Midnight Crossover Heuristic:
+                    # If the time is early AM (00:00 - 04:00), we assume it's the next calendar day
+                    # (i.e., after the midnight crossover of a late-night gig).
+                    if (dt.hour, dt.minute) < (4, 1):
+                        dt += timedelta(days=1)
                 events.append({"time": dt, "label": label, "desc": desc})
             except Exception as e:
                 logger.warning(f"Could not parse time '{time_str}' for {label}: {e}")

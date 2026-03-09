@@ -572,46 +572,51 @@ class FinalizeView(discord.ui.View):
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         
-        # 1. State: Processed
-        self.row["Discord Finished"] = "True"
-        
-        # 2. Date/Time Pre-Processing
-        infer_calendar_datetimes(self.row)
-        
-        # 3. MAPBOT Enrichment (Task 1 & 2)
         try:
-            mapbot = get_mapbot_module()
-            gigs = mapbot.get_sorted_gigs()
-            # Calculate route for THIS row and update self.row object
-            if await mapbot.plan_route_for_gig(self.row, gigs):
-                await interaction.followup.send("🚚 MAPBOT: Routing and logistics calculated.")
-        except Exception as e:
-            logger.error(f"MAPBOT enrichment failed: {e}")
-
-        # 4. Google Calendar (Task 1 & 3)
-        # Create/Update events including the new Travel Block
-        cal_results = []
-        if self.row.get("Calendar Created") != "True" or self.needs_calendar_update:
-            cal_results = await asyncio.to_thread(create_calendar_events, self.row, self.needs_calendar_update)
-        
-        # 5. Final Atomic Write (Threaded)
-        # Save enriched row (IDs, Routing, Mileage) once
-        result = await asyncio.to_thread(update_master_csv, self.row, self.filepath.name)
-        
-        # 6. Archive & Cleanup
-        try:
-            shutil.move(str(self.filepath), str(PROCESSED_DIR / self.filepath.name))
-            archive_msg = "📂 File archived."
-        except Exception as e:
-            archive_msg = f"⚠️ Archive failed: {e}"
+            # 1. State: Processed
+            self.row["Discord Finished"] = "True"
             
-        summary = "\n".join(cal_results)
-        await interaction.followup.send(f"**Done!**\n{archive_msg}\n{summary}\n\n*Closing thread...*")
-        await asyncio.sleep(5)
-        try:
-            await interaction.channel.edit(archived=True, locked=True)
-        except:
-            pass
+            # 2. Date/Time Pre-Processing
+            infer_calendar_datetimes(self.row)
+            
+            # 3. MAPBOT Enrichment (Task 1 & 2)
+            try:
+                mapbot = get_mapbot_module()
+                gigs = mapbot.get_sorted_gigs()
+                # Calculate route for THIS row and update self.row object
+                if await mapbot.plan_route_for_gig(self.row, gigs):
+                    await interaction.followup.send("🚚 MAPBOT: Routing and logistics calculated.")
+            except Exception as e:
+                logger.error(f"MAPBOT enrichment failed: {e}")
+                await interaction.followup.send(f"⚠️ MAPBOT enrichment failed: {e}")
+
+            # 4. Google Calendar (Task 1 & 3)
+            # Create/Update events including the new Travel Block
+            cal_results = []
+            if self.row.get("Calendar Created") != "True" or self.needs_calendar_update:
+                cal_results = await asyncio.to_thread(create_calendar_events, self.row, self.needs_calendar_update)
+            
+            # 5. Final Atomic Write (Threaded)
+            # Save enriched row (IDs, Routing, Mileage) once
+            result = await asyncio.to_thread(update_master_csv, self.row, self.filepath.name)
+            
+            # 6. Archive & Cleanup
+            try:
+                shutil.move(str(self.filepath), str(PROCESSED_DIR / self.filepath.name))
+                archive_msg = "📂 File archived."
+            except Exception as e:
+                archive_msg = f"⚠️ Archive failed: {e}"
+                
+            summary = "\n".join(cal_results)
+            await interaction.followup.send(f"**Done!**\n{archive_msg}\n{summary}\n\n*Closing thread...*")
+            await asyncio.sleep(5)
+            try:
+                await interaction.channel.edit(archived=True, locked=True)
+            except:
+                pass
+        except Exception as e:
+            logger.error(f"Error in approve: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ An error occurred during processing: {e}")
 
 async def run_review_process(thread: discord.Thread, filepath: Path, action_type: str, changelog: dict):
     """The interactive Q&A loop inside the thread."""
