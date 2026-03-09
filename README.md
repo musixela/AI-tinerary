@@ -72,6 +72,9 @@ The `google_scripts/` folder contains essential automations to bridge your local
 
 ### 1. Requirements
 - **Python 3.10+**
+- **Tkinter:** Required for the GUI manager (`AI-tinerary-GUI.py`).
+  - **macOS (Homebrew):** `brew install python-tk@3.14` (or your Python version)
+  - **Linux (Ubuntu/Debian):** `sudo apt-get install python3-tk`
 - **Ollama:** Running locally with `ollama serve`.
 - **OpenRouteService:** A free API key from [openrouteservice.org](https://openrouteservice.org/).
 - **Discord Bot Token:** Created via the [Discord Developer Portal](https://discord.com/developers/applications).
@@ -84,8 +87,9 @@ git clone <repo-url>
 cd AI-tinerary
 ./setup.sh
 
-# Configure
-# Edit 'Master Config.txt' with your API keys and Folder IDs
+# Launch the Management GUI (Recommended)
+# This allows you to configure API keys and start/stop bots visually.
+python AI-tinerary-GUI.py
 ```
 
 ### 3. Google Script Deployment

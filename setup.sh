@@ -48,6 +48,23 @@ if [ ! -f "$PROJECT_DIR/Dependencies.txt" ]; then
     exit 1
 fi
 
+# Check for tkinter (standard library but often missing on Homebrew Python)
+echo "Checking for tkinter (required for GUI)..."
+if ! python3 -c "import tkinter" &> /dev/null; then
+    echo "⚠️ Warning: 'tkinter' is missing."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "It seems you're on macOS using Homebrew Python."
+        echo "Try installing it with: brew install python-tk@$PYTHON_VERSION"
+        echo ""
+    else
+        echo "On Linux, try: sudo apt-get install python3-tk"
+        echo ""
+    fi
+else
+    echo "✓ tkinter found"
+    echo ""
+fi
+
 # Install dependencies
 echo "Installing dependencies from Dependencies.txt..."
 pip install --upgrade pip > /dev/null 2>&1
