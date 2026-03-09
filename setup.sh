@@ -78,8 +78,36 @@ mkdir -p "$PROJECT_DIR/Contracts/Incoming"
 mkdir -p "$PROJECT_DIR/Contracts/Complete"
 mkdir -p "$PROJECT_DIR/Outputs/Bits"
 mkdir -p "$PROJECT_DIR/Outputs/Backups"
+mkdir -p "$PROJECT_DIR/Outputs/Processed"
+mkdir -p "$PROJECT_DIR/Outputs/Itineraries"
 mkdir -p "$PROJECT_DIR/Logs"
+mkdir -p "$PROJECT_DIR/Configs"
+mkdir -p "$PROJECT_DIR/Keys"
 echo "✓ Directories created"
+echo ""
+
+# Create Default config in Configs if it doesn't exist
+if [ ! -f "$PROJECT_DIR/Configs/Default" ]; then
+    echo "Creating Default configuration in Configs/..."
+    cp "$PROJECT_DIR/Master Config.txt" "$PROJECT_DIR/Configs/Default" 2>/dev/null || cat > "$PROJECT_DIR/Configs/Default" << 'EOF'
+# AI-tinerary Default Configuration Profile
+HOME_BASE_ADDRESS=""
+ORS_API_KEY=""
+ORS_BASE_URL=""
+OLLAMA_URL="http://localhost:11434/api/generate"
+OLLAMA_MODEL="ministral-3:3b"
+MAX_THREADS=4
+TIMEZONE="America/New_York"
+DISCORD_BOT_TOKEN=""
+DISCORD_CHANNEL_ID=""
+GOOGLE_SERVICE_ACCOUNT_FILE=""
+BAND_CALENDAR_ID=""
+PUBLIC_CALENDAR_ID=""
+EOF
+    echo "✓ Default config created"
+else
+    echo "✓ Default config already exists"
+fi
 echo ""
 
 # Create Master Config.txt if it doesn't exist

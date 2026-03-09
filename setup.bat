@@ -80,8 +80,40 @@ if not exist "%PROJECT_DIR%\Contracts\Incoming" mkdir "%PROJECT_DIR%\Contracts\I
 if not exist "%PROJECT_DIR%\Contracts\Complete" mkdir "%PROJECT_DIR%\Contracts\Complete"
 if not exist "%PROJECT_DIR%\Outputs\Bits" mkdir "%PROJECT_DIR%\Outputs\Bits"
 if not exist "%PROJECT_DIR%\Outputs\Backups" mkdir "%PROJECT_DIR%\Outputs\Backups"
+if not exist "%PROJECT_DIR%\Outputs\Processed" mkdir "%PROJECT_DIR%\Outputs\Processed"
+if not exist "%PROJECT_DIR%\Outputs\Itineraries" mkdir "%PROJECT_DIR%\Outputs\Itineraries"
 if not exist "%PROJECT_DIR%\Logs" mkdir "%PROJECT_DIR%\Logs"
+if not exist "%PROJECT_DIR%\Configs" mkdir "%PROJECT_DIR%\Configs"
+if not exist "%PROJECT_DIR%\Keys" mkdir "%PROJECT_DIR%\Keys"
 echo [OK] Directories created
+echo.
+
+REM Create Default config in Configs if it doesn't exist
+if not exist "%PROJECT_DIR%\Configs\Default" (
+    echo Creating Default configuration in Configs\...
+    if exist "%PROJECT_DIR%\Master Config.txt" (
+        copy "%PROJECT_DIR%\Master Config.txt" "%PROJECT_DIR%\Configs\Default" >nul
+    ) else (
+        (
+            echo # AI-tinerary Default Configuration Profile
+            echo HOME_BASE_ADDRESS=
+            echo ORS_API_KEY=
+            echo ORS_BASE_URL=
+            echo OLLAMA_URL=http://localhost:11434/api/generate
+            echo OLLAMA_MODEL=ministral-3:3b
+            echo MAX_THREADS=4
+            echo TIMEZONE=America/New_York
+            echo DISCORD_BOT_TOKEN=
+            echo DISCORD_CHANNEL_ID=
+            echo GOOGLE_SERVICE_ACCOUNT_FILE=
+            echo BAND_CALENDAR_ID=
+            echo PUBLIC_CALENDAR_ID=
+        ) > "%PROJECT_DIR%\Configs\Default"
+    )
+    echo [OK] Default config created
+) else (
+    echo [OK] Default config already exists
+)
 echo.
 
 REM Create Master Config.txt if it doesn't exist
