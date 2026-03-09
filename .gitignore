@@ -54,3 +54,5 @@ Thumbs.db
 
 # AI-tinerary
 Configs/
+Keys/
+.gitignore
