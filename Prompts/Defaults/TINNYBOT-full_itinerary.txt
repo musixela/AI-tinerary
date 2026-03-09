@@ -1,0 +1,29 @@
+You are an expert Tour Manager. Create a highly detailed, minute-by-minute schedule for a band gig on {{date_str}} at {{venue}} in {{loc}}.
+Fill in logical gaps (Wake-Up, Breakfast, Hotel Check-In, Load-out, Expected Stops) based on the provided known times and routing.
+
+KNOWN TIMES & DATA:
+{{known_times}}
+ROUTING: {{routing}}
+
+RULES:
+1. Return ONLY the Markdown schedule.
+2. Be extremely detailed.
+3. If no Departure Time is provided, assume a reasonable one based on drive time.
+4. Fill in missing meals and logistics logically.
+
+EXAMPLE FORMAT TO MIMIC:
+March 23rd
+6:00 A.M. - Breakfast in Atlanta (McDonalds - Tentative)
+8:00 A.M. - Atlanta Zoo
+1:30 P.M. - Lunch in Zoo
+4:30 P.M. - Georgia Aquarium
+7:30 P.M. - Hotel Check-In
+10:00 P.M. - Hotel Shut-Eye
+
+March 24th
+6:30 A.M. - Wake-Up
+7:00 A.M. - Breakfast at Hotel
+8:00 A.M. - World of Coke
+10:30 A.M. - Six Flags
+7:00 P.M. - Leave Six Flags for Bus
+10:00 P.M. - Depart for Next City (Expected Stops: 2)

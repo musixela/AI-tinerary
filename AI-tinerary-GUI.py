@@ -105,11 +105,13 @@ class AItineraryGUI(customtkinter.CTk):
         
         self.tabview.add("🚀 Dashboard")
         self.tabview.add("⚙️ Master Config")
+        self.tabview.add("🎭 Prompts")
         self.tabview.add("☁️ Google Scripts")
         self.tabview.add("🛠️ Environment")
         
         self.build_dashboard(self.tabview.tab("🚀 Dashboard"))
         self.build_config_tab(self.tabview.tab("⚙️ Master Config"))
+        self.build_prompts_tab(self.tabview.tab("🎭 Prompts"))
         self.build_gscripts_tab(self.tabview.tab("☁️ Google Scripts"))
         self.build_env_tab(self.tabview.tab("🛠️ Environment"))
 
@@ -573,6 +575,105 @@ class AItineraryGUI(customtkinter.CTk):
                 else: self.log_msg(f"❌ CSV Extraction failed (Code {rc}).")
             except Exception as e: self.log_msg(f"❌ Error: {e}")
         threading.Thread(target=run, daemon=True).start()
+
+    # ==========================================
+    # TAB: PROMPTS
+    # ==========================================
+    def build_prompts_tab(self, tab):
+        self.prompts_dir = ROOT_DIR / "Prompts"
+        self.defaults_dir = self.prompts_dir / "Defaults"
+        self.prompts_dir.mkdir(exist_ok=True)
+        self.defaults_dir.mkdir(exist_ok=True)
+
+        # Controls Frame
+        controls = customtkinter.CTkFrame(tab)
+        controls.pack(fill="x", padx=10, pady=10)
+
+        customtkinter.CTkLabel(controls, text="Select Prompt:", font=("Arial", 12, "bold")).pack(side="left", padx=15, pady=10)
+        self.prompt_dropdown = customtkinter.CTkComboBox(controls, values=self.get_prompt_list(), command=self.on_prompt_selected, width=250)
+        self.prompt_dropdown.pack(side="left", padx=5)
+
+        customtkinter.CTkButton(controls, text="Refresh", width=80, command=self.refresh_prompts).pack(side="left", padx=5)
+        customtkinter.CTkButton(controls, text="💾 Save Changes", width=120, fg_color="#1f538d", command=self.save_prompt_changes).pack(side="right", padx=10)
+        customtkinter.CTkButton(controls, text="🔄 Revert to Default", width=140, fg_color="#606060", hover_color="#404040", command=self.revert_prompt_to_default).pack(side="right", padx=5)
+
+        # Editor Frame
+        editor_frame = customtkinter.CTkFrame(tab)
+        editor_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        
+        self.txt_prompt_editor = customtkinter.CTkTextbox(editor_frame, font=("Consolas", 13), undo=True)
+        self.txt_prompt_editor.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Initial Load
+        self.refresh_prompts()
+        self.init_prompt_defaults()
+
+    def get_prompt_list(self):
+        if not self.prompts_dir.exists(): return []
+        return [f.name for f in self.prompts_dir.glob("*.txt") if f.is_file()]
+
+    def refresh_prompts(self):
+        prompts = self.get_prompt_list()
+        self.prompt_dropdown.configure(values=prompts)
+        if prompts:
+            if not self.prompt_dropdown.get() in prompts:
+                self.prompt_dropdown.set(prompts[0])
+            self.on_prompt_selected(self.prompt_dropdown.get())
+        else:
+            self.prompt_dropdown.set("")
+            self.txt_prompt_editor.delete("1.0", tk.END)
+
+    def on_prompt_selected(self, filename):
+        if not filename: return
+        path = self.prompts_dir / filename
+        if path.exists():
+            content = path.read_text(encoding="utf-8")
+            self.txt_prompt_editor.delete("1.0", tk.END)
+            self.txt_prompt_editor.insert("1.0", content)
+            self.log_msg(f"🎭 Loaded prompt: {filename}")
+
+    def save_prompt_changes(self):
+        filename = self.prompt_dropdown.get()
+        if not filename: return
+        content = self.txt_prompt_editor.get("1.0", tk.END).strip()
+        path = self.prompts_dir / filename
+        try:
+            path.write_text(content, encoding="utf-8")
+            self.log_msg(f"✅ Saved changes to {filename}")
+            messagebox.showinfo("Success", f"Prompt '{filename}' updated successfully.")
+        except Exception as e:
+            self.log_msg(f"❌ Failed to save prompt: {e}")
+            messagebox.showerror("Error", f"Failed to save: {e}")
+
+    def init_prompt_defaults(self):
+        """Seed Defaults folder with current prompt versions if they don't exist."""
+        for p in self.prompts_dir.glob("*.txt"):
+            d_path = self.defaults_dir / p.name
+            if not d_path.exists():
+                shutil.copy2(p, d_path)
+                self.log_msg(f"📦 Created default backup for {p.name}")
+
+    def revert_prompt_to_default(self):
+        filename = self.prompt_dropdown.get()
+        if not filename: return
+        d_path = self.defaults_dir / filename
+        if not d_path.exists():
+            messagebox.showwarning("Warning", f"No default backup found for '{filename}'.")
+            return
+        
+        if messagebox.askyesno("Confirm Revert", f"Are you sure you want to revert '{filename}' to its original default state? All unsaved changes will be lost."):
+            try:
+                content = d_path.read_text(encoding="utf-8")
+                self.txt_prompt_editor.delete("1.0", tk.END)
+                self.txt_prompt_editor.insert("1.0", content)
+                # Automatically save the reverted content
+                path = self.prompts_dir / filename
+                path.write_text(content, encoding="utf-8")
+                self.log_msg(f"🔄 Reverted {filename} to default.")
+                messagebox.showinfo("Success", f"'{filename}' has been restored to its default state.")
+            except Exception as e:
+                self.log_msg(f"❌ Revert failed: {e}")
+                messagebox.showerror("Error", f"Failed to revert: {e}")
 
     # ==========================================
     # OLLAMA

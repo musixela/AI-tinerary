@@ -85,6 +85,7 @@ if not exist "%PROJECT_DIR%\Outputs\Itineraries" mkdir "%PROJECT_DIR%\Outputs\It
 if not exist "%PROJECT_DIR%\Logs" mkdir "%PROJECT_DIR%\Logs"
 if not exist "%PROJECT_DIR%\Configs" mkdir "%PROJECT_DIR%\Configs"
 if not exist "%PROJECT_DIR%\Keys" mkdir "%PROJECT_DIR%\Keys"
+if not exist "%PROJECT_DIR%\Prompts\Defaults" mkdir "%PROJECT_DIR%\Prompts\Defaults"
 echo [OK] Directories created
 echo.
 

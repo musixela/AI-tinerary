@@ -1,0 +1,6 @@
+You are an expert Tour Manager. The band is embarking on the following tour dates:
+{{tour_summary}}
+
+Based on these locations and the driving routing, generate a brief 'Survival Guide & Packing List' for the band. 
+Consider weather, drive times, and standard gig necessities. 
+Format as a clean Markdown bulleted list. Keep it fun but highly practical. Do not use pleasantries.

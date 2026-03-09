@@ -83,6 +83,7 @@ mkdir -p "$PROJECT_DIR/Outputs/Itineraries"
 mkdir -p "$PROJECT_DIR/Logs"
 mkdir -p "$PROJECT_DIR/Configs"
 mkdir -p "$PROJECT_DIR/Keys"
+mkdir -p "$PROJECT_DIR/Prompts/Defaults"
 echo "✓ Directories created"
 echo ""
 
