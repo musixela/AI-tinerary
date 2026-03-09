@@ -155,19 +155,69 @@ def process_mileage(data: ContractData):
 
 def call_ollama_extract(text: str, focus_fields: list = None) -> ContractData:
     """Extract show data via local AI with strict formatting."""
-    keys = focus_fields if focus_fields else CSV_HEADERS
+    # Build field-specific instructions from Pydantic model
+    field_descriptions = []
+    
+    # If focus_fields is not provided, use a subset of CSV_HEADERS that are relevant for extraction
+    if focus_fields:
+        keys = focus_fields
+    else:
+        # Exclude technical/calculated fields from initial AI extraction to reduce noise
+        exclude_from_ai = [
+            "Est. Mileage", "Band Event ID", "Public Event ID", 
+            "Travel Event ID", "Departure Time"
+        ]
+        keys = [h for h in CSV_HEADERS if h not in exclude_from_ai]
+    
+    for name, field in ContractData.model_fields.items():
+        alias = field.alias or name
+        if alias in keys:
+            desc = field.description or "No description provided."
+            field_descriptions.append(f"- \"{alias}\": {desc}")
+
+    field_instr = "\n".join(field_descriptions)
+
     system = f"""
-Extract tour contract details into a JSON object with these EXACT keys: {json.dumps(keys)}.
-RULES:
-1. Values must be simple strings.
-2. Join multiple values with commas.
-3. Return ONLY raw JSON.
-4. If a value is unknown, return an empty string.
+You are an expert tour manager extracting show details from contracts and emails.
+Your goal is to be precise and structured.
+
+EXTRACT INTO THESE EXACT KEYS:
+{json.dumps(keys)}
+
+FIELD-SPECIFIC RULES:
+{field_instr}
+
+GENERAL RULES:
+1. "DE-BUNDLE" INFORMATION: If a single sentence or block of text contains multiple details (e.g., "Load in 4pm, Doors 6pm"), split them into their respective fields ("Load In": "4:00 PM", "Doors": "6:00 PM"). Also separate pay from expenses (e.g., "$950 fee + $50 gas" -> "Pay": "$950", "Other Expenses": "$50 gas").
+2. BE CONCISE: Use short, clean strings.
+3. BOLEANS: For 'Booking', 'MGMT', and 'Door Deal', use "TRUE" or "FALSE".
+4. DATES: Use M/D format (e.g., "5/8").
+5. UNKNOWN: If a value is unknown, return an empty string "".
+6. FORMAT: Return ONLY raw JSON. No markdown, no conversational text.
 """
     try:
-        r = requests.post(OLLAMA_URL, json={"model": OLLAMA_MODEL, "prompt": f"{system}\n\nTEXT:\n{text}", "stream": False, "format": "json"}, timeout=180)
+        r = requests.post(OLLAMA_URL, json={"model": OLLAMA_MODEL, "prompt": f"{system}\n\nTEXT TO PROCESS:\n{text}", "stream": False, "format": "json"}, timeout=180)
         r.raise_for_status()
         raw_json = json.loads(r.json().get("response", "{}"))
+        
+        # Normalize Boolean strings just in case
+        for key in ["Booking", "MGMT", "Door Deal"]:
+            if key in raw_json:
+                val = str(raw_json[key]).strip().upper()
+                if val in ["YES", "Y", "1", "TRUE"]:
+                    raw_json[key] = "TRUE"
+                elif val in ["NO", "N", "0", "FALSE"]:
+                    raw_json[key] = "FALSE"
+                elif val == "":
+                    # Booking is TRUE by default unless stated otherwise
+                    raw_json[key] = "TRUE" if key == "Booking" else "FALSE"
+                else:
+                    # Keep as is if it's something else (unlikely with JSON format)
+                    pass
+            elif key == "Booking":
+                # Ensure Booking is TRUE if missing from AI response
+                raw_json[key] = "TRUE"
+        
         # Fill in missing fields with empty strings if focus_fields was used
         if focus_fields:
             full_data = {k: "" for k in CSV_HEADERS}
@@ -181,6 +231,54 @@ RULES:
 
 # ------------- CORE WORKFLOW -------------
 
+def extract_text_from_pdf(pdf_bytes: bytes, filename: str) -> str:
+    """Extract text from PDF with custom logic (e.g. Rockwood page limiting)."""
+    try:
+        reader = PdfReader(BytesIO(pdf_bytes))
+        pages = reader.pages
+        
+        # Check filename or metadata title
+        pdf_title = (reader.metadata.title or "") if reader.metadata else ""
+        if "rockwood booking contract" in filename.lower() or "rockwood booking contract" in pdf_title.lower():
+            logger.info(f"Rockwood Booking Contract detected (File: '{filename}', Title: '{pdf_title}'). Limiting to first 3 pages.")
+            pages = pages[:3]
+            
+        return "\n\n".join(page.extract_text() or "" for page in pages)
+    except Exception as e:
+        logger.error(f"Failed to extract text from PDF '{filename}': {e}")
+        return ""
+
+def extract_text_from_eml(eml_bytes: bytes) -> str:
+    """Extract text from EML including body and PDF attachments."""
+    try:
+        msg = BytesParser(policy=policy.default).parse(BytesIO(eml_bytes))
+        parts = []
+        
+        # Headers
+        parts.append(f"Subject: {msg['subject']}\nFrom: {msg['from']}\nDate: {msg['date']}")
+        
+        # Body
+        body = msg.get_body(preferencelist=('plain', 'html'))
+        if body:
+            try:
+                parts.append(body.get_content())
+            except:
+                pass
+                
+        # Attachments
+        for attachment in msg.iter_attachments():
+            ctype = attachment.get_content_type()
+            filename = attachment.get_filename() or "attachment.pdf"
+            if ctype == "application/pdf" or filename.lower().endswith(".pdf"):
+                pdf_text = extract_text_from_pdf(attachment.get_content(), filename)
+                if pdf_text:
+                    parts.append(f"--- ATTACHMENT: {filename} ---\n{pdf_text}")
+                    
+        return "\n\n".join(parts)
+    except Exception as e:
+        logger.error(f"Failed to extract text from EML: {e}")
+        return ""
+
 def process_group(prefix, paths):
     logger.info(f"Processing group: {prefix}")
     
@@ -189,14 +287,11 @@ def process_group(prefix, paths):
         full_text = ""
         for p in sorted(paths):
             if p.suffix.lower() == ".pdf":
-                reader = PdfReader(BytesIO(p.read_bytes()))
-                full_text += "\n\n".join(page.extract_text() or "" for page in reader.pages)
+                full_text += extract_text_from_pdf(p.read_bytes(), p.name)
+            elif p.suffix.lower() == ".eml":
+                full_text += extract_text_from_eml(p.read_bytes())
             else:
-                with open(p, "rb") as f:
-                    msg = BytesParser(policy=policy.default).parse(f)
-                    body = msg.get_body(preferencelist=('plain'))
-                    if body:
-                        full_text += f"{msg['subject']}\n{body.get_content()}"
+                logger.warning(f"Unsupported file type: {p.suffix}")
 
         # 2. AI Extract
         data = call_ollama_extract(full_text)
