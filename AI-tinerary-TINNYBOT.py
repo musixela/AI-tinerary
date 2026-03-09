@@ -28,6 +28,7 @@ load_dotenv(dotenv_path=ROOT_DIR / "Master Config.txt", override=True)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b")
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "16384"))
 
 class TinnyBot(commands.Cog):
     def __init__(self, bot):
@@ -79,7 +80,12 @@ class TinnyBot(commands.Cog):
             r = await asyncio.to_thread(
                 requests.post, 
                 OLLAMA_URL, 
-                json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}, 
+                json={
+                    "model": OLLAMA_MODEL, 
+                    "prompt": prompt, 
+                    "stream": False,
+                    "options": {"num_ctx": OLLAMA_NUM_CTX}
+                }, 
                 timeout=120
             )
             r.raise_for_status()
@@ -125,7 +131,12 @@ class TinnyBot(commands.Cog):
             r = await asyncio.to_thread(
                 requests.post, 
                 OLLAMA_URL, 
-                json={"model": OLLAMA_MODEL, "prompt": system_prompt, "stream": False}, 
+                json={
+                    "model": OLLAMA_MODEL, 
+                    "prompt": system_prompt, 
+                    "stream": False,
+                    "options": {"num_ctx": OLLAMA_NUM_CTX}
+                }, 
                 timeout=120
             )
             r.raise_for_status()

@@ -5,6 +5,7 @@ pydantic
 python-dotenv
 filelock
 customtkinter
+Pillow
 
 # Geocoding & Routing
 geopy

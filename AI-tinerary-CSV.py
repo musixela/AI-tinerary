@@ -56,6 +56,7 @@ ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_BASE_URL = os.getenv("ORS_BASE_URL", "")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ministral-3:3b")
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "16384"))
 MAX_THREADS = int(os.getenv("MAX_THREADS", "4"))
 
 # Explicit Routing Mode Logging
@@ -188,7 +189,13 @@ def call_ollama_extract(text: str, focus_fields: list = None) -> ContractData:
         system = f"Extract tour contract details into a JSON object with these EXACT keys: {json.dumps(keys)}."
 
     try:
-        r = requests.post(OLLAMA_URL, json={"model": OLLAMA_MODEL, "prompt": f"{system}\n\nTEXT TO PROCESS:\n{text}", "stream": False, "format": "json"}, timeout=180)
+        r = requests.post(OLLAMA_URL, json={
+            "model": OLLAMA_MODEL, 
+            "prompt": f"{system}\n\nTEXT TO PROCESS:\n{text}", 
+            "stream": False, 
+            "format": "json",
+            "options": {"num_ctx": OLLAMA_NUM_CTX}
+        }, timeout=180)
         r.raise_for_status()
         raw_json = json.loads(r.json().get("response", "{}"))
         

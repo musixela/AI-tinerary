@@ -17,10 +17,14 @@ import shutil
 from pathlib import Path
 import datetime
 import tkinter as tk
-from tkinter import messagebox, filedialog
 import customtkinter
+import tkinter.messagebox as messagebox
+try:
+    from PIL import Image
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
-# Optional: Import requests. If not available (e.g., outside venv), handle gracefully.
 try:
     import requests
     HAS_REQUESTS = True
@@ -484,42 +488,25 @@ class AItineraryGUI(customtkinter.CTk):
             lbl_frame = customtkinter.CTkFrame(self.wiki_panel, fg_color="transparent")
             lbl_frame.pack(fill="x", padx=10, pady=10)
             customtkinter.CTkLabel(lbl_frame, text="📖 Project Wiki", font=("Arial", 16, "bold")).pack(side="left")
-            customtkinter.CTkButton(lbl_frame, text="✖", width=30, fg_color="transparent", hover_color="#602020", command=self.toggle_wiki_panel).pack(side="right")
             
-            # Content
-            self.txt_wiki = customtkinter.CTkTextbox(self.wiki_panel, font=("Arial", 12), wrap="word")
-            self.txt_wiki.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+            # Header Buttons
+            h_btns = customtkinter.CTkFrame(lbl_frame, fg_color="transparent")
+            h_btns.pack(side="right")
+            customtkinter.CTkButton(h_btns, text="🔄", width=30, command=self.fetch_wiki_content).pack(side="left", padx=2)
+            customtkinter.CTkButton(h_btns, text="✖", width=30, fg_color="transparent", hover_color="#602020", command=self.toggle_wiki_panel).pack(side="left", padx=2)
             
-            wiki_content = """# AI-tinerary Guide
-
-Welcome to the Project Wiki.
-
-## Core Workflows
-1. Incoming: Place PDFs/EMLs in Contracts/Incoming.
-2. Dashboard: Run Extraction.
-3. Bits: Use CALBOT (Discord) to review.
-4. Finalize: Events are pushed to GCal and Master CSV.
-
-## Prompt Placeholders
-- {{keys}}: Field list
-- {{field_instr}}: Instructions
-- {{tour_summary}}: TinnyBot summary
-
-## Useful Tips
-- Set num_ctx higher for complex contracts.
-- Use 'Rockwood' in filename to auto-crop to 3 pages.
-"""
-            self.txt_wiki.insert("1.0", wiki_content)
-            self.txt_wiki.configure(state="disabled")
-            
-            # External Link Button
-            customtkinter.CTkButton(self.wiki_panel, text="🌐 Open Full Wiki Online", 
-                                   command=lambda: webbrowser.open("https://github.com/musixela/AI-tinerary/wiki")).pack(fill="x", padx=10, pady=10)
+            # Content Area (Scrollable Frame for native widgets)
+            self.wiki_container = customtkinter.CTkScrollableFrame(self.wiki_panel, fg_color="transparent")
+            self.wiki_container.pack(fill="both", expand=True, padx=5, pady=(0, 10))
+            self.wiki_container.grid_columnconfigure(0, weight=1)
             
             self.wiki_visible = True
-            # Expand window width if needed
+            # Expand window width
             new_width = self.winfo_width() + 350
             self.geometry(f"{new_width}x{self.winfo_height()}")
+            
+            # Fetch content (default to Home.md)
+            self.fetch_wiki_content("Home.md")
         else:
             # Hide Panel
             if self.wiki_panel:
@@ -531,6 +518,100 @@ Welcome to the Project Wiki.
             # Restore window width
             new_width = max(1100, self.winfo_width() - 350)
             self.geometry(f"{new_width}x{self.winfo_height()}")
+
+    def fetch_wiki_content(self, page_name="Home.md"):
+        """Fetches Wiki content and triggers the native renderer."""
+        def run():
+            content = "⚠️ Failed to fetch wiki content."
+            
+            # 1. Try Local File
+            local_wiki = ROOT_DIR / "Wiki" / page_name
+            if local_wiki.exists():
+                try:
+                    content = local_wiki.read_text(encoding="utf-8")
+                except Exception as e:
+                    content = f"❌ Error reading local wiki: {e}"
+            
+            # 2. Fallback to Web (Only for Home.md)
+            elif HAS_REQUESTS and page_name == "Home.md":
+                ts = int(time.time())
+                url = f"https://raw.githubusercontent.com/wiki/musixela/AI-tinerary/Home.md?t={ts}"
+                try:
+                    r = requests.get(url, timeout=5)
+                    if r.status_code == 200:
+                        content = r.text
+                    else:
+                        content = f"⚠️ Could not load wiki (HTTP {r.status_code})"
+                except Exception as e:
+                    content = f"❌ Error: {e}"
+            
+            else:
+                content = f"### 📄 Page Not Found\nThe page `{page_name}` does not exist in the local Wiki folder."
+            
+            self.after(0, lambda: self.render_markdown(content))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def render_markdown(self, text):
+        """Simple native renderer for CTk widgets."""
+        # Clear existing
+        for child in self.wiki_container.winfo_children():
+            child.destroy()
+
+        lines = text.split("\n")
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                customtkinter.CTkLabel(self.wiki_container, text="").pack()
+                continue
+
+            # 1. Headers
+            if line.startswith("# "):
+                customtkinter.CTkLabel(self.wiki_container, text=line[2:], font=("Arial", 20, "bold"), anchor="w", justify="left").pack(fill="x", padx=10, pady=(10, 2))
+            elif line.startswith("## "):
+                customtkinter.CTkLabel(self.wiki_container, text=line[3:], font=("Arial", 16, "bold"), anchor="w", justify="left").pack(fill="x", padx=10, pady=(8, 2))
+            elif line.startswith("### "):
+                customtkinter.CTkLabel(self.wiki_container, text=line[4:], font=("Arial", 14, "bold"), anchor="w", justify="left").pack(fill="x", padx=10, pady=(5, 2))
+            
+            # 2. Images ![alt](path)
+            elif line.startswith("![") and "](" in line:
+                if not HAS_PIL:
+                    customtkinter.CTkLabel(self.wiki_container, text="[Image Placeholder: PIL/Pillow missing]", font=("Arial", 10, "italic")).pack(pady=5)
+                    continue
+                try:
+                    img_path_str = line.split("](")[1].split(")")[0]
+                    img_path = ROOT_DIR / "Wiki" / img_path_str
+                    if img_path.exists():
+                        # Use CTkImage for high-DPI scaling
+                        pil_img = Image.open(img_path)
+                        # Basic resize to fit width
+                        w, h = pil_img.size
+                        ratio = min(300/w, 1.0)
+                        ctk_img = customtkinter.CTkImage(light_image=pil_img, dark_image=pil_img, size=(int(w*ratio), int(h*ratio)))
+                        customtkinter.CTkLabel(self.wiki_container, image=ctk_img, text="").pack(pady=10)
+                except:
+                    pass
+
+            # 3. Body Text & WikiLinks
+            else:
+                # Process WikiLinks [[Page Name]]
+                if "[[" in line and "]]" in line:
+                    parts = re.split(r"(\[\[.*?\]\])", line)
+                    row_frame = customtkinter.CTkFrame(self.wiki_container, fg_color="transparent")
+                    row_frame.pack(fill="x", padx=10)
+                    
+                    for p in parts:
+                        if p.startswith("[[") and p.endswith("]]"):
+                            display_name = p[2:-2]
+                            filename = display_name.replace(" ", "-") + ".md"
+                            link = customtkinter.CTkLabel(row_frame, text=display_name, text_color="#1f538d", font=("Arial", 12, "underline"), cursor="hand2")
+                            link.pack(side="left")
+                            link.bind("<Button-1>", lambda e, f=filename: self.fetch_wiki_content(f))
+                        else:
+                            customtkinter.CTkLabel(row_frame, text=p, font=("Arial", 12), wraplength=300, justify="left").pack(side="left")
+                else:
+                    customtkinter.CTkLabel(self.wiki_container, text=line, font=("Arial", 12), wraplength=300, justify="left", anchor="w").pack(fill="x", padx=10, pady=1)
 
     def export_log(self, textbox, log_name):
         content = textbox.get("1.0", tk.END).strip()
