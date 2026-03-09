@@ -153,6 +153,7 @@ class AItineraryGUI(customtkinter.CTk):
         customtkinter.CTkButton(calbot_controls, text="▶ Start CALBOT", width=120, command=self.start_calbot).pack(side="left", padx=(20, 5))
         customtkinter.CTkButton(calbot_controls, text="⏹ Stop", width=80, fg_color="#606060", hover_color="#404040", command=self.stop_calbot).pack(side="left", padx=5)
         customtkinter.CTkButton(calbot_controls, text="🔄 Restart", width=100, command=self.restart_calbot).pack(side="left", padx=5)
+        customtkinter.CTkButton(calbot_controls, text="📂 Reprocess Latest", width=140, fg_color="#1f538d", command=self.reprocess_latest_processed).pack(side="left", padx=20)
 
         # CSV Pipeline Section
         self.lf_csv = customtkinter.CTkFrame(scroll_frame)
@@ -498,8 +499,10 @@ class AItineraryGUI(customtkinter.CTk):
             self.calbot_process = subprocess.Popen([py_exe, script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             self.log_msg("▶️ Started CALBOT.")
             def read_output():
-                for line in iter(self.calbot_process.stdout.readline, ''): self.log_terminal(line)
-                self.calbot_process.stdout.close()
+                proc = self.calbot_process
+                if not proc: return
+                for line in iter(proc.stdout.readline, ''): self.log_terminal(line)
+                proc.stdout.close()
             threading.Thread(target=read_output, daemon=True).start()
         except Exception as e: self.log_msg(f"❌ Failed to start CALBOT: {e}")
 
@@ -513,6 +516,48 @@ class AItineraryGUI(customtkinter.CTk):
         self.stop_calbot()
         time.sleep(1)
         self.start_calbot()
+
+    def reprocess_latest_processed(self):
+        """Move the most recent file from Processed back to Bits for re-notification."""
+        processed_dir = ROOT_DIR / "Outputs" / "Bits" / "Processed"
+        bits_dir = ROOT_DIR / "Outputs" / "Bits"
+        state_file = ROOT_DIR / "Outputs" / "bot_state.json"
+        
+        if not processed_dir.exists():
+            messagebox.showinfo("Reprocess", "Processed directory does not exist yet.")
+            return
+            
+        files = list(processed_dir.glob("*.csv"))
+        if not files:
+            messagebox.showinfo("Reprocess", "No processed files found to reprocess.")
+            return
+            
+        # Sort by modification time to get the latest
+        latest_file = max(files, key=os.path.getmtime)
+        
+        if messagebox.askyesno("Reprocess", f"Move '{latest_file.name}' back to Bits for re-processing?"):
+            try:
+                # Move file
+                shutil.move(str(latest_file), str(bits_dir / latest_file.name))
+                
+                # Remove from notified_files in bot_state.json if possible
+                if state_file.exists():
+                    try:
+                        with open(state_file, "r") as f:
+                            data = json.load(f)
+                        
+                        notified = data.get("notified_files", [])
+                        if latest_file.name in notified:
+                            notified.remove(latest_file.name)
+                            with open(state_file, "w") as f:
+                                json.dump({"notified_files": notified}, f)
+                    except: pass
+                
+                self.log_msg(f"🔄 Moved '{latest_file.name}' back to Bits for reprocessing.")
+                messagebox.showinfo("Success", f"'{latest_file.name}' is now ready for re-review.")
+            except Exception as e:
+                self.log_msg(f"❌ Reprocess failed: {e}")
+                messagebox.showerror("Error", f"Failed to move file: {e}")
 
     def run_csv_pipeline(self):
         self.log_msg("⚡ Initiating CSV Extraction...")

@@ -82,6 +82,7 @@ _map_spec = importlib.util.spec_from_file_location("mapbot", ROOT_DIR / "AI-tine
 mapbot = importlib.util.module_from_spec(_map_spec)
 _map_spec.loader.exec_module(mapbot)
 
+
 # ------------------------------------------------------------------
 # Stage 1: Row Matching
 # ------------------------------------------------------------------
@@ -199,7 +200,9 @@ def generate_changelog(old: dict, merged: dict) -> dict:
         "Pay": None,
         "Contact Name": None,
         "Load In": None,
-        "Doors": None
+        "Doors": None,
+        "Accomodations": None,
+        "Accom Address": "needs_mapbot"
     }
 
     for field, effect in monitor_fields.items():
@@ -477,67 +480,84 @@ def create_calendar_events(row: dict, needs_update: bool = False):
 
     results = []
     
-    # 1. Band Calendar (Private)
-    if BAND_CALENDAR_ID:
+    def upsert_event(calendar_id, event_id_key, body, event_type="Event"):
+        # 0. Handle manual Deletion (Replace)
+        delete_id = row.get("Delete Event ID")
+        if delete_id:
+            try:
+                service.events().delete(calendarId=calendar_id, eventId=delete_id).execute()
+                logger.info(f"Deleted stale event {delete_id} from {event_type}")
+                results.append(f"🗑️ Deleted stale event from {event_type}.")
+            except Exception as d_e:
+                if "404" not in str(d_e):
+                    logger.warning(f"Failed to delete event {delete_id} from {event_type}: {d_e}")
+                    results.append(f"⚠️ Failed to delete stale event from {event_type}: {d_e}")
+
+        existing_id = row.get(event_id_key)
+        
+        # 1. Try Update if ID exists
+        if existing_id:
+            try:
+                e = service.events().update(calendarId=calendar_id, eventId=existing_id, body=body).execute()
+                return f"🔄 {event_type} Updated: [Link]({e.get('htmlLink')})", existing_id
+            except Exception as e:
+                if "404" in str(e):
+                    logger.warning(f"{event_type} ID {existing_id} not found (404).")
+                    existing_id = None
+                else:
+                    return f"❌ {event_type} Update Error: {e}", existing_id
+
+        # 2. Insert new (NO AUTO-LINKING)
         try:
-            event_id = row.get("Band Event ID")
-            if event_id:
-                e = service.events().update(calendarId=BAND_CALENDAR_ID, eventId=event_id, body=event_body).execute()
-                results.append(f"🔄 Band Calendar Updated: [Link]({e.get('htmlLink')})")
-            else:
-                e = service.events().insert(calendarId=BAND_CALENDAR_ID, body=event_body).execute()
-                results.append(f"✅ Band Calendar Created: [Link]({e.get('htmlLink')})")
-                row["Band Event ID"] = e.get("id")
+            e = service.events().insert(calendarId=calendar_id, body=body).execute()
+            return f"✅ {event_type} Created: [Link]({e.get('htmlLink')})", e.get("id")
+        except Exception as e:
+             return f"❌ {event_type} Creation Error: {e}", None
+
+    # 1. Band Calendar (Private)
+    if BAND_CALENDAR_ID and row.get("Calendar Created") != "Skip":
+        msg, new_id = upsert_event(BAND_CALENDAR_ID, "Band Event ID", event_body, "Band Calendar")
+        results.append(msg)
+        if new_id:
+            row["Band Event ID"] = new_id
             row["Calendar Created"] = "True"
 
-            # Travel Blocking (Task 3)
-            dep_time = row.get("Departure Time")
-            if dep_time:
-                from dateutil import parser
-                travel_start = dep_time
-                # End of travel is either Load In or Calendar Start
-                travel_end = row.get("Calendar Start")
-                if row.get("Load In"):
-                    try:
-                        travel_end = parser.parse(f"{row.get('Starting Date')} {row.get('Load In')}").isoformat()
-                    except: pass
-                
-                travel_body = {
-                    "summary": f"🚗 Travel to {venue}",
-                    "description": f"Driving from previous location to {venue}.",
-                    "start": {"dateTime": travel_start, "timeZone": TIMEZONE},
-                    "end": {"dateTime": travel_end, "timeZone": TIMEZONE},
-                    "colorId": "5" # Yellow/Banana for travel
-                }
-                
-                t_event_id = row.get("Travel Event ID")
-                if t_event_id:
-                    service.events().update(calendarId=BAND_CALENDAR_ID, eventId=t_event_id, body=travel_body).execute()
-                    results.append("🚗 Travel block updated.")
-                else:
-                    te = service.events().insert(calendarId=BAND_CALENDAR_ID, body=travel_body).execute()
-                    row["Travel Event ID"] = te.get("id")
-                    results.append("🚗 Travel block created.")
-
-        except Exception as e:
-            results.append(f"❌ Band Cal Error: {e}")
+        # Travel Blocking (Task 3)
+        dep_time = row.get("Departure Time")
+        if dep_time:
+            from dateutil import parser
+            travel_start = dep_time
+            # End of travel is either Load In or Calendar Start
+            travel_end = row.get("Calendar Start")
+            if row.get("Load In"):
+                try:
+                    travel_end = parser.parse(f"{row.get('Starting Date')} {row.get('Load In')}").isoformat()
+                except: pass
             
+            travel_body = {
+                "summary": f"🚗 Travel to {venue}",
+                "description": f"Driving from previous location to {venue}.",
+                "start": {"dateTime": travel_start, "timeZone": TIMEZONE},
+                "end": {"dateTime": travel_end, "timeZone": TIMEZONE},
+                "colorId": "5" # Yellow/Banana for travel
+            }
+            
+            t_msg, t_id = upsert_event(BAND_CALENDAR_ID, "Travel Event ID", travel_body, "Travel Block")
+            results.append(t_msg)
+            if t_id: row["Travel Event ID"] = t_id
+
     # 2. Public Calendar
-    if PUBLIC_CALENDAR_ID:
-        try:
-            pub_body = event_body.copy()
-            pub_body["description"] = public_desc
-            event_id = row.get("Public Event ID")
-            if event_id:
-                e = service.events().update(calendarId=PUBLIC_CALENDAR_ID, eventId=event_id, body=pub_body).execute()
-                results.append(f"🔄 Public Calendar Updated: [Link]({e.get('htmlLink')})")
-            else:
-                e = service.events().insert(calendarId=PUBLIC_CALENDAR_ID, body=pub_body).execute()
-                results.append(f"✅ Public Calendar Created: [Link]({e.get('htmlLink')})")
-                row["Public Event ID"] = e.get("id")
+    if PUBLIC_CALENDAR_ID and row.get("Public Calendar Created") != "Skip":
+        pub_body = event_body.copy()
+        pub_body["description"] = public_desc
+        msg, new_id = upsert_event(PUBLIC_CALENDAR_ID, "Public Event ID", pub_body, "Public Calendar")
+        results.append(msg)
+        if new_id:
+            row["Public Event ID"] = new_id
             row["Public Calendar Created"] = "True"
-        except Exception as e:
-            results.append(f"❌ Public Cal Error: {e}")
+
+    if not results:
+        results.append("ℹ️ No calendar changes required or all skipped.")
 
     return results
 
@@ -545,11 +565,58 @@ def create_calendar_events(row: dict, needs_update: bool = False):
 # Discord UI (Stages 5 & 7)
 # ------------------------------------------------------------------
 
+class DuplicateSelectView(discord.ui.View):
+    def __init__(self, matches: list):
+        super().__init__(timeout=300)
+        self.matches = matches
+        self.selected_id = None
+        self.delete_id = None
+        self.choice = None # 'merge', 'replace', 'duplicate', 'disregard'
+
+        # Show Merge/Replace for up to 2 matches to keep UI clean
+        for i, match in enumerate(self.matches[:2]):
+            m_btn = discord.ui.Button(label=f"Merge: {match['summary'][:25]}", style=discord.ButtonStyle.success)
+            m_btn.callback = self.make_callback(match['id'], 'merge')
+            self.add_item(m_btn)
+            
+            r_btn = discord.ui.Button(label=f"Replace: {match['summary'][:25]}", style=discord.ButtonStyle.secondary)
+            r_btn.callback = self.make_callback(match['id'], 'replace')
+            self.add_item(r_btn)
+        
+        dup_btn = discord.ui.Button(label="➕ Create New (Duplicate)", style=discord.ButtonStyle.primary)
+        dup_btn.callback = self.duplicate_callback
+        self.add_item(dup_btn)
+
+        skip_btn = discord.ui.Button(label="🚫 Skip Calendar", style=discord.ButtonStyle.danger)
+        skip_btn.callback = self.skip_callback
+        self.add_item(skip_btn)
+
+    def make_callback(self, event_id, choice):
+        async def callback(interaction: discord.Interaction):
+            if choice == 'merge': self.selected_id = event_id
+            if choice == 'replace': self.delete_id = event_id
+            self.choice = choice
+            self.stop()
+            msg = f"🔗 Linking with `{event_id}`" if choice == 'merge' else f"♻️ Replacing `{event_id}`"
+            await interaction.response.send_message(msg, ephemeral=True)
+        return callback
+
+    async def duplicate_callback(self, interaction: discord.Interaction):
+        self.choice = 'duplicate'
+        self.stop()
+        await interaction.response.send_message("🆕 Creating a separate new event.", ephemeral=True)
+
+    async def skip_callback(self, interaction: discord.Interaction):
+        self.choice = 'disregard'
+        self.stop()
+        await interaction.response.send_message("⏭ Skipping calendar creation for this gig.", ephemeral=True)
+
 class ReviewView(discord.ui.View):
-    def __init__(self, filepath: Path, action_type: str, changelog: dict = None):
+    def __init__(self, filepath: Path, action_type: str, row: dict, changelog: dict = None):
         super().__init__(timeout=None)
         self.filepath = filepath
         self.action_type = action_type # "appended" or "updated"
+        self.row = row
         self.changelog = changelog
 
     @discord.ui.button(label="📝 Review", style=discord.ButtonStyle.primary, custom_id="review_btn")
@@ -562,7 +629,7 @@ class ReviewView(discord.ui.View):
         thread = await interaction.channel.create_thread(name=thread_name, type=discord.ChannelType.private_thread)
         await interaction.response.send_message(f"Started review in {thread.mention}", ephemeral=True)
         
-        await run_review_process(thread, self.filepath, self.action_type, self.changelog)
+        await run_review_process(thread, self.filepath, self.action_type, self.row, self.changelog)
 
 
 class FinalizeView(discord.ui.View):
@@ -588,31 +655,97 @@ class FinalizeView(discord.ui.View):
             try:
                 mapbot = get_mapbot_module()
                 gigs = mapbot.get_sorted_gigs()
-                # Calculate route for THIS row and update self.row object
                 if await mapbot.plan_route_for_gig(self.row, gigs):
-                    await interaction.followup.send("🚚 MAPBOT: Routing and logistics calculated.")
+                    await interaction.followup.send("🚚 MAPBOT: Routing and logistics calculated.", ephemeral=True)
             except Exception as e:
                 logger.error(f"MAPBOT enrichment failed: {e}")
-                await interaction.followup.send(f"⚠️ MAPBOT enrichment failed: {e}")
 
-            # 4. Google Calendar (Task 1 & 3)
-            # Create/Update events including the new Travel Block
+            # 4. Google Calendar Management (Interactive Step)
+            proceed_to_calendar = True
+            if GOOGLE_SERVICE_ACCOUNT_FILE and BAND_CALENDAR_ID:
+                try:
+                    creds = Credentials.from_service_account_file(GOOGLE_SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+                    service = build("calendar", "v3", credentials=creds)
+                    
+                    venue = self.row.get("Venue", "")
+                    dt_str = self.row.get("Calendar Start")
+                    
+                    matches = []
+                    if dt_str:
+                        try:
+                            dt = datetime.fromisoformat(dt_str)
+                            tmin = (dt - timedelta(hours=12)).isoformat() + "Z"
+                            tmax = (dt + timedelta(hours=12)).isoformat() + "Z"
+                            
+                            request = service.events().list(calendarId=BAND_CALENDAR_ID, timeMin=tmin, timeMax=tmax, singleEvents=True, q=venue)
+                            res = await asyncio.to_thread(request.execute)
+                            
+                            for item in res.get('items', []):
+                                if venue.lower() in item.get('summary', '').lower():
+                                    prefix = "[LINKED] " if item['id'] == self.row.get("Band Event ID") else ""
+                                    matches.append({"id": item['id'], "summary": prefix + item['summary']})
+                        except: pass
+                    
+                    # If we found matches or have an existing ID, we MUST ask
+                    if matches or self.row.get("Band Event ID"):
+                        if not matches and self.row.get("Band Event ID"):
+                            matches.append({"id": self.row.get("Band Event ID"), "summary": "[STALE LINK] Existing Event"})
+
+                        view = DuplicateSelectView(matches)
+                        match_msg = await interaction.followup.send("🗓️ **Calendar Match Found.** How should I handle this gig on your calendar?", view=view)
+                        
+                        # Wait for the user to make a choice
+                        if await view.wait():
+                            # This returns True if it timed out
+                            await interaction.followup.send("⚠️ Calendar choice timed out. Finalization cancelled. Please try again.", ephemeral=True)
+                            proceed_to_calendar = False
+                        elif view.choice is None:
+                            # User closed or something went wrong
+                            await interaction.followup.send("❌ No calendar choice made. Finalization cancelled.", ephemeral=True)
+                            proceed_to_calendar = False
+                        else:
+                            # Handle choices
+                            if view.choice == 'merge' and view.selected_id:
+                                self.row["Band Event ID"] = view.selected_id
+                                # We keep Public Event ID as-is (if it's linked, it updates; if not, it stays empty)
+                            elif view.choice == 'replace' and view.delete_id:
+                                self.row["Delete Event ID"] = view.delete_id
+                                self.row["Band Event ID"] = ""
+                                self.row["Public Event ID"] = ""
+                            elif view.choice == 'duplicate':
+                                self.row["Band Event ID"] = ""
+                                self.row["Public Event ID"] = ""
+                                self.row["Force Duplicate"] = "True"
+                            elif view.choice == 'disregard':
+                                self.row["Calendar Created"] = "Skip"
+                                self.row["Public Calendar Created"] = "Skip"
+                        
+                        try: await match_msg.delete()
+                        except: pass
+
+                except Exception as e:
+                    logger.warning(f"Calendar check failed: {e}")
+                    await interaction.followup.send(f"⚠️ Calendar check error: {e}. Proceeding carefully...", ephemeral=True)
+
+            if not proceed_to_calendar:
+                return
+
+            # 5. Execute Calendar Updates
             cal_results = []
-            if self.row.get("Calendar Created") != "True" or self.needs_calendar_update:
+            if self.row.get("Calendar Created") != "Skip":
                 cal_results = await asyncio.to_thread(create_calendar_events, self.row, self.needs_calendar_update)
             
-            # 5. Final Atomic Write (Threaded)
-            # Save enriched row (IDs, Routing, Mileage) once
+            # 6. Final Atomic Write (Threaded)
             result = await asyncio.to_thread(update_master_csv, self.row, self.filepath.name)
             
-            # 6. Archive & Cleanup
+            # 7. Archive & Cleanup
             try:
                 shutil.move(str(self.filepath), str(PROCESSED_DIR / self.filepath.name))
                 archive_msg = "📂 File archived."
             except Exception as e:
                 archive_msg = f"⚠️ Archive failed: {e}"
                 
-            summary = "\n".join(cal_results)
+            summary = "\n".join(cal_results) if cal_results else "ℹ️ No calendar updates performed."
             await interaction.followup.send(f"**Done!**\n{archive_msg}\n{summary}\n\n*Closing thread...*")
             await asyncio.sleep(5)
             try:
@@ -623,9 +756,10 @@ class FinalizeView(discord.ui.View):
             logger.error(f"Error in approve: {e}", exc_info=True)
             await interaction.followup.send(f"❌ An error occurred during processing: {e}")
 
-async def run_review_process(thread: discord.Thread, filepath: Path, action_type: str, changelog: dict):
+async def run_review_process(thread: discord.Thread, filepath: Path, action_type: str, row: dict, changelog: dict):
     """The interactive Q&A loop inside the thread."""
-    row = read_csv_row(filepath)
+    # We use the row passed in (which is merged with master data if an update)
+    # instead of re-reading from Bits which would lose IDs.
     
     if action_type == "appended":
         await thread.send(f"🆕 **New Gig Detected!**\nVenue: `{row.get('Venue')}`\nDate: `{row.get('Starting Date')}`")
@@ -806,7 +940,40 @@ async def calbot_status(ctx):
     embed = discord.Embed(title="CALBOT Status", color=0x3498db)
     embed.add_field(name="Pending Reviews", value=len(pending), inline=True)
     embed.add_field(name="Master Gigs", value=master_count, inline=True)
+    
+    processed = list(PROCESSED_DIR.glob("*.csv"))
+    if processed:
+        embed.add_field(name="Processed Files", value=len(processed), inline=True)
+        
     await ctx.send(embed=embed)
+
+@calbot_cmd.command(name="reprocess")
+async def calbot_reprocess(ctx, filename: str = None):
+    """Move a file from Processed back to Bits for re-review."""
+    if not filename:
+        processed_files = sorted(list(PROCESSED_DIR.glob("*.csv")), key=os.path.getmtime, reverse=True)
+        if not processed_files:
+            await ctx.send("❌ No files in Processed folder.")
+            return
+        file_list = "\n".join([f"- `{f.name}`" for f in processed_files[:10]])
+        await ctx.send(f"Usage: `!calbot reprocess <filename>`\nRecent processed files:\n{file_list}")
+        return
+
+    source = PROCESSED_DIR / filename
+    dest = BITS_DIR / filename
+    
+    if source.exists():
+        try:
+            shutil.move(str(source), str(dest))
+            if filename in notified_files:
+                notified_files.remove(filename)
+                save_state()
+            await ctx.send(f"✅ Moved `{filename}` back to Bits for reprocessing. Run `!calbot merge` to trigger notification.")
+            logger.info(f"🔄 Reprocessing triggered for {filename}")
+        except Exception as e:
+            await ctx.send(f"❌ Failed to move file: {e}")
+    else:
+        await ctx.send(f"❌ File `{filename}` not found in Processed folder.")
 
 @calbot_cmd.command(name="merge")
 async def calbot_merge(ctx):
@@ -871,11 +1038,19 @@ async def on_ready():
 @tasks.loop(seconds=60)
 async def watch_folder():
     """Poller to check for new CSVs."""
+    logger.info("👀 CALBOT: Checking for new CSVs in Bits/ folder...")
     if not DISCORD_CHANNEL_ID or not str(DISCORD_CHANNEL_ID).isdigit():
+        logger.error(f"❌ Invalid DISCORD_CHANNEL_ID: {DISCORD_CHANNEL_ID}")
         return
         
     channel = bot.get_channel(int(DISCORD_CHANNEL_ID))
-    if not channel: return
+    if not channel:
+        logger.warning(f"⚠️ Channel {DISCORD_CHANNEL_ID} not found in cache. Attempting to fetch...")
+        try:
+            channel = await bot.fetch_channel(int(DISCORD_CHANNEL_ID))
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch channel {DISCORD_CHANNEL_ID}: {e}")
+            return
 
     found_new = False
     # Read master rows for matching (Threaded)
@@ -884,14 +1059,24 @@ async def watch_folder():
         with open(MASTER_CSV, "r", newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))
     
-    master_rows = await asyncio.to_thread(read_master)
+    try:
+        master_rows = await asyncio.to_thread(read_master)
+    except Exception as e:
+        logger.error(f"❌ Failed to read master CSV: {e}")
+        return
 
-    for csv_file in BITS_DIR.glob("*.csv"):
+    csv_files = list(BITS_DIR.glob("*.csv"))
+    logger.info(f"📂 Found {len(csv_files)} CSV files in {BITS_DIR}")
+
+    for csv_file in csv_files:
         if csv_file.name in notified_files:
             continue
             
+        logger.info(f"📄 Processing new file: {csv_file.name}")
         new_row = read_csv_row(csv_file)
-        if not new_row: continue
+        if not new_row:
+            logger.warning(f"⚠️ Empty or invalid CSV: {csv_file.name}")
+            continue
 
         # Stage 1: Match
         row_index = find_matching_row(master_rows, new_row)
@@ -903,10 +1088,6 @@ async def watch_folder():
             old_row = master_rows[row_index]
             merged = merge_fields(old_row, new_row)
             changelog = generate_changelog(old_row, merged)
-            if not changelog:
-                # No changes, mark as notified and skip
-                notified_files.add(csv_file.name)
-                continue
 
         venue = new_row.get("Venue") or "Unknown Venue"
         date = new_row.get("Starting Date") or "Unknown Date"
@@ -918,11 +1099,22 @@ async def watch_folder():
         )
         if changelog:
             embed.add_field(name="Changes", value=f"{len(changelog['changed_fields'])} fields", inline=True)
+        elif action_type == "updated":
+            embed.add_field(name="Note", value="Matched existing gig (no core changes detected).", inline=True)
         
-        await channel.send(embed=embed, view=ReviewView(csv_file, action_type, changelog))
-        notified_files.add(csv_file.name)
-        save_state()
-        found_new = True
+        try:
+            # Important: Pass the merged row (which has IDs) if updated, else new_row
+            row_to_pass = merged if action_type == "updated" else new_row
+            await channel.send(embed=embed, view=ReviewView(csv_file, action_type, row_to_pass, changelog))
+            logger.info(f"✅ Notified Discord about {csv_file.name}")
+            notified_files.add(csv_file.name)
+            save_state()
+            found_new = True
+        except Exception as e:
+            logger.error(f"❌ Failed to send notification for {csv_file.name}: {e}")
+
+    if not found_new:
+        logger.info("😴 No new contracts to notify.")
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
