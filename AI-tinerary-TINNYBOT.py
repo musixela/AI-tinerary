@@ -17,7 +17,7 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from constants import MASTER_CSV, ITINERARIES_DIR, ROOT_DIR
+from constants import MASTER_CSV, ITINERARIES_DIR, ROOT_DIR, PROMPTS_DIR
 import os
 
 logger = logging.getLogger(__name__)
@@ -66,14 +66,15 @@ class TinnyBot(commands.Cog):
         
         tour_summary = "\n".join([f"- {g['Starting Date']}: {g['Venue']} in {g['Location']} (Routing: {g.get('Routing', 'N/A')})" for g in gigs])
         
-        prompt = f"""
-You are an expert Tour Manager. The band is embarking on the following tour dates:
-{tour_summary}
+        # Load prompt from file
+        prompt_path = PROMPTS_DIR / "TINNYBOT-survival_guide.txt"
+        if prompt_path.exists():
+            prompt = prompt_path.read_text(encoding="utf-8")
+            prompt = prompt.replace("{{tour_summary}}", tour_summary)
+        else:
+            logger.warning(f"Prompt file not found: {prompt_path}. Using fallback.")
+            prompt = f"Generate a brief 'Survival Guide & Packing List' for these tour dates: {tour_summary}"
 
-Based on these locations and the driving routing, generate a brief 'Survival Guide & Packing List' for the band. 
-Consider weather, drive times, and standard gig necessities. 
-Format as a clean Markdown bulleted list. Keep it fun but highly practical. Do not use pleasantries.
-"""
         try:
             r = await asyncio.to_thread(
                 requests.post, 
@@ -107,37 +108,19 @@ Format as a clean Markdown bulleted list. Keep it fun but highly practical. Do n
             "Waypoints/Stops": gig.get("Other Details", "")
         }
         
-        system_prompt = f"""
-You are an expert Tour Manager. Create a highly detailed, minute-by-minute schedule for a band gig on {date_str} at {venue} in {loc}.
-Fill in logical gaps (Wake-Up, Breakfast, Hotel Check-In, Load-out, Expected Stops) based on the provided known times and routing.
+        # Load system prompt from file
+        prompt_path = PROMPTS_DIR / "TINNYBOT-full_itinerary.txt"
+        if prompt_path.exists():
+            system_prompt = prompt_path.read_text(encoding="utf-8")
+            system_prompt = system_prompt.replace("{{date_str}}", date_str)
+            system_prompt = system_prompt.replace("{{venue}}", venue)
+            system_prompt = system_prompt.replace("{{loc}}", loc)
+            system_prompt = system_prompt.replace("{{known_times}}", json.dumps(known_times, indent=2))
+            system_prompt = system_prompt.replace("{{routing}}", routing)
+        else:
+            logger.warning(f"Prompt file not found: {prompt_path}. Using fallback.")
+            system_prompt = f"Create a minute-by-minute schedule for {date_str} at {venue} in {loc}."
 
-KNOWN TIMES & DATA:
-{json.dumps(known_times, indent=2)}
-ROUTING: {routing}
-
-RULES:
-1. Return ONLY the Markdown schedule.
-2. Be extremely detailed.
-3. If no Departure Time is provided, assume a reasonable one based on drive time.
-4. Fill in missing meals and logistics logically.
-
-EXAMPLE FORMAT TO MIMIC:
-March 23rd
-6:00 A.M. - Breakfast in Atlanta (McDonalds - Tentative)
-8:00 A.M. - Atlanta Zoo
-1:30 P.M. - Lunch in Zoo
-4:30 P.M. - Georgia Aquarium
-7:30 P.M. - Hotel Check-In
-10:00 P.M. - Hotel Shut-Eye
-
-March 24th
-6:30 A.M. - Wake-Up
-7:00 A.M. - Breakfast at Hotel
-8:00 A.M. - World of Coke
-10:30 A.M. - Six Flags
-7:00 P.M. - Leave Six Flags for Bus
-10:00 P.M. - Depart for Next City (Expected Stops: 2)
-"""
         try:
             r = await asyncio.to_thread(
                 requests.post, 

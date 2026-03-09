@@ -19,9 +19,10 @@ BACKUPS_DIR = OUTPUTS_DIR / "Backups"
 LOGS_DIR = ROOT_DIR / "Logs"
 CONTRACTS_DIR = ROOT_DIR / "Contracts" / "Incoming"
 COMPLETE_DIR = ROOT_DIR / "Contracts" / "Complete"
+PROMPTS_DIR = ROOT_DIR / "Prompts"
 
 # Ensure directories exist
-for d in [PROCESSED_DIR, BACKUPS_DIR, LOGS_DIR, CONTRACTS_DIR, COMPLETE_DIR, OUTPUTS_DIR, BITS_DIR, ITINERARIES_DIR]:
+for d in [PROCESSED_DIR, BACKUPS_DIR, LOGS_DIR, CONTRACTS_DIR, COMPLETE_DIR, OUTPUTS_DIR, BITS_DIR, ITINERARIES_DIR, PROMPTS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ------------------------------------------------------------------

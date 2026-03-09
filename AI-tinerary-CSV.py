@@ -30,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from constants import (
     ROOT_DIR, CONTRACTS_DIR, OUTPUTS_DIR, BITS_DIR, COMPLETE_DIR,
-    ContractData, CSV_HEADERS, get_master_lock
+    ContractData, CSV_HEADERS, PROMPTS_DIR, get_master_lock
 )
 
 # ------------- CONFIGURATION & SETUP -------------
@@ -177,24 +177,16 @@ def call_ollama_extract(text: str, focus_fields: list = None) -> ContractData:
 
     field_instr = "\n".join(field_descriptions)
 
-    system = f"""
-You are an expert tour manager extracting show details from contracts and emails.
-Your goal is to be precise and structured.
+    # Load system prompt from file
+    prompt_path = PROMPTS_DIR / "CSV-system.txt"
+    if prompt_path.exists():
+        system = prompt_path.read_text(encoding="utf-8")
+        system = system.replace("{{keys}}", json.dumps(keys))
+        system = system.replace("{{field_instr}}", field_instr)
+    else:
+        logger.warning(f"Prompt file not found: {prompt_path}. Using fallback.")
+        system = f"Extract tour contract details into a JSON object with these EXACT keys: {json.dumps(keys)}."
 
-EXTRACT INTO THESE EXACT KEYS:
-{json.dumps(keys)}
-
-FIELD-SPECIFIC RULES:
-{field_instr}
-
-GENERAL RULES:
-1. "DE-BUNDLE" INFORMATION: If a single sentence or block of text contains multiple details (e.g., "Load in 4pm, Doors 6pm"), split them into their respective fields ("Load In": "4:00 PM", "Doors": "6:00 PM"). Also separate pay from expenses (e.g., "$950 fee + $50 gas" -> "Pay": "$950", "Other Expenses": "$50 gas").
-2. BE CONCISE: Use short, clean strings.
-3. BOLEANS: For 'Booking', 'MGMT', and 'Door Deal', use "TRUE" or "FALSE".
-4. DATES: Use M/D format (e.g., "5/8").
-5. UNKNOWN: If a value is unknown, return an empty string "".
-6. FORMAT: Return ONLY raw JSON. No markdown, no conversational text.
-"""
     try:
         r = requests.post(OLLAMA_URL, json={"model": OLLAMA_MODEL, "prompt": f"{system}\n\nTEXT TO PROCESS:\n{text}", "stream": False, "format": "json"}, timeout=180)
         r.raise_for_status()
