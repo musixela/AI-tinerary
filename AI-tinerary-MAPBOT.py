@@ -66,6 +66,12 @@ async def get_coords(address: str, venue: str = None, location: str = None):
     
     for query in queries:
         if not query or str(query).strip() == "": continue
+        
+        # Safeguard: Skip very short strings or common non-address words
+        q_clean = str(query).strip().lower()
+        if len(q_clean) < 3 or q_clean in ["yes", "no", "skip", "none", "true", "false"]:
+            continue
+            
         try:
             # 1.1s sleep for Nominatim compliance (1 req/sec)
             await asyncio.sleep(1.1)
@@ -125,17 +131,18 @@ def get_driving_data(dest_coords, origin_coords, waypoints=None):
 # ------------------------------------------------------------------
 
 def get_sorted_gigs():
-    if not MASTER_CSV.exists(): return []
-    try:
-        with open(MASTER_CSV, "r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            rows = list(reader)
-            # Sort by Starting Date
-            rows.sort(key=lambda x: x.get("Starting Date", ""))
-            return rows
-    except Exception as e:
-        logger.error(f"Failed to read master CSV for context: {e}")
-        return []
+    with get_master_lock():
+        if not MASTER_CSV.exists(): return []
+        try:
+            with open(MASTER_CSV, "r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                # Sort by Starting Date
+                rows.sort(key=lambda x: x.get("Starting Date", ""))
+                return rows
+        except Exception as e:
+            logger.error(f"Failed to read master CSV for context: {e}")
+            return []
 
 def get_previous_gig(gigs, current_gig):
     current_date = current_gig.get("Starting Date")

@@ -35,31 +35,33 @@ class TinnyBot(commands.Cog):
         self.bot = bot
 
     def get_gigs_in_range(self, start_date_str, end_date_str=None):
-        if not MASTER_CSV.exists():
-            return []
-            
-        gigs = []
-        try:
-            start_dt = parser.parse(start_date_str).date()
-            end_dt = parser.parse(end_date_str).date() if end_date_str else start_dt
+        from constants import get_master_lock
+        with get_master_lock():
+            if not MASTER_CSV.exists():
+                return []
+                
+            gigs = []
+            try:
+                start_dt = parser.parse(start_date_str).date()
+                end_dt = parser.parse(end_date_str).date() if end_date_str else start_dt
 
-            with open(MASTER_CSV, "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    gig_date_str = row.get("Starting Date")
-                    if not gig_date_str: continue
-                    try:
-                        gig_dt = parser.parse(gig_date_str).date()
-                        if start_dt <= gig_dt <= end_dt:
-                            gigs.append(row)
-                    except:
-                        pass
-        except Exception as e:
-            logger.error(f"Date parsing error: {e}")
-            
-        # Sort chronologically
-        gigs.sort(key=lambda x: x.get("Starting Date", ""))
-        return gigs
+                with open(MASTER_CSV, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        gig_date_str = row.get("Starting Date")
+                        if not gig_date_str: continue
+                        try:
+                            gig_dt = parser.parse(gig_date_str).date()
+                            if start_dt <= gig_dt <= end_dt:
+                                gigs.append(row)
+                        except:
+                            pass
+            except Exception as e:
+                logger.error(f"Date parsing error: {e}")
+                
+            # Sort chronologically
+            gigs.sort(key=lambda x: x.get("Starting Date", ""))
+            return gigs
 
     async def generate_survival_guide(self, gigs):
         """Asks Ollama for a customized packing list and survival guide based on the tour data."""

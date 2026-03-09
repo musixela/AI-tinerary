@@ -631,6 +631,32 @@ class ReviewView(discord.ui.View):
         
         await run_review_process(thread, self.filepath, self.action_type, self.row, self.changelog)
 
+class EditModal(discord.ui.Modal):
+    def __init__(self, row: dict):
+        super().__init__(title="Manual Parameter Edit")
+        self.row = row
+        self.confirmed = False
+
+        self.venue = discord.ui.TextInput(label="Venue", default=row.get("Venue", ""), required=False)
+        self.date = discord.ui.TextInput(label="Starting Date", default=row.get("Starting Date", ""), placeholder="M/D", required=False)
+        self.time = discord.ui.TextInput(label="Show Time", default=row.get("Time", ""), placeholder="7:00 PM", required=False)
+        self.pay = discord.ui.TextInput(label="Pay", default=row.get("Pay", ""), placeholder="$1,000.00", required=False)
+        self.address = discord.ui.TextInput(label="Address", default=row.get("Address", ""), placeholder="Street, City, ST", required=False, style=discord.TextStyle.paragraph)
+
+        self.add_item(self.venue)
+        self.add_item(self.date)
+        self.add_item(self.time)
+        self.add_item(self.pay)
+        self.add_item(self.address)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.row["Venue"] = self.venue.value
+        self.row["Starting Date"] = self.date.value
+        self.row["Time"] = self.time.value
+        self.row["Pay"] = self.pay.value
+        self.row["Address"] = self.address.value
+        self.confirmed = True
+        await interaction.response.send_message("✅ Details updated manually.", ephemeral=True)
 
 class FinalizeView(discord.ui.View):
     def __init__(self, filepath: Path, row: dict, action_type: str, needs_calendar_update: bool = False):
@@ -639,6 +665,8 @@ class FinalizeView(discord.ui.View):
         self.row = row
         self.action_type = action_type
         self.needs_calendar_update = needs_calendar_update
+        self.confirmed = False
+        self.edit_requested = False
 
     @discord.ui.button(label="✅ Confirm & Publish", style=discord.ButtonStyle.success)
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -651,7 +679,7 @@ class FinalizeView(discord.ui.View):
             # 2. Date/Time Pre-Processing
             infer_calendar_datetimes(self.row)
             
-            # 3. MAPBOT Enrichment (Task 1 & 2)
+            # 3. MAPBOT Enrichment
             try:
                 mapbot = get_mapbot_module()
                 gigs = mapbot.get_sorted_gigs()
@@ -660,7 +688,7 @@ class FinalizeView(discord.ui.View):
             except Exception as e:
                 logger.error(f"MAPBOT enrichment failed: {e}")
 
-            # 4. Google Calendar Management (Interactive Step)
+            # 4. Google Calendar Management
             proceed_to_calendar = True
             if GOOGLE_SERVICE_ACCOUNT_FILE and BAND_CALENDAR_ID:
                 try:
@@ -686,7 +714,6 @@ class FinalizeView(discord.ui.View):
                                     matches.append({"id": item['id'], "summary": prefix + item['summary']})
                         except: pass
                     
-                    # If we found matches or have an existing ID, we MUST ask
                     if matches or self.row.get("Band Event ID"):
                         if not matches and self.row.get("Band Event ID"):
                             matches.append({"id": self.row.get("Band Event ID"), "summary": "[STALE LINK] Existing Event"})
@@ -694,20 +721,15 @@ class FinalizeView(discord.ui.View):
                         view = DuplicateSelectView(matches)
                         match_msg = await interaction.followup.send("🗓️ **Calendar Match Found.** How should I handle this gig on your calendar?", view=view)
                         
-                        # Wait for the user to make a choice
                         if await view.wait():
-                            # This returns True if it timed out
-                            await interaction.followup.send("⚠️ Calendar choice timed out. Finalization cancelled. Please try again.", ephemeral=True)
+                            await interaction.followup.send("⚠️ Calendar choice timed out. Finalization cancelled.", ephemeral=True)
                             proceed_to_calendar = False
                         elif view.choice is None:
-                            # User closed or something went wrong
                             await interaction.followup.send("❌ No calendar choice made. Finalization cancelled.", ephemeral=True)
                             proceed_to_calendar = False
                         else:
-                            # Handle choices
                             if view.choice == 'merge' and view.selected_id:
                                 self.row["Band Event ID"] = view.selected_id
-                                # We keep Public Event ID as-is (if it's linked, it updates; if not, it stays empty)
                             elif view.choice == 'replace' and view.delete_id:
                                 self.row["Delete Event ID"] = view.delete_id
                                 self.row["Band Event ID"] = ""
@@ -715,7 +737,6 @@ class FinalizeView(discord.ui.View):
                             elif view.choice == 'duplicate':
                                 self.row["Band Event ID"] = ""
                                 self.row["Public Event ID"] = ""
-                                self.row["Force Duplicate"] = "True"
                             elif view.choice == 'disregard':
                                 self.row["Calendar Created"] = "Skip"
                                 self.row["Public Calendar Created"] = "Skip"
@@ -725,7 +746,7 @@ class FinalizeView(discord.ui.View):
 
                 except Exception as e:
                     logger.warning(f"Calendar check failed: {e}")
-                    await interaction.followup.send(f"⚠️ Calendar check error: {e}. Proceeding carefully...", ephemeral=True)
+                    await interaction.followup.send(f"⚠️ Calendar check error: {e}.", ephemeral=True)
 
             if not proceed_to_calendar:
                 return
@@ -735,7 +756,7 @@ class FinalizeView(discord.ui.View):
             if self.row.get("Calendar Created") != "Skip":
                 cal_results = await asyncio.to_thread(create_calendar_events, self.row, self.needs_calendar_update)
             
-            # 6. Final Atomic Write (Threaded)
+            # 6. Final Atomic Write
             result = await asyncio.to_thread(update_master_csv, self.row, self.filepath.name)
             
             # 7. Archive & Cleanup
@@ -747,6 +768,8 @@ class FinalizeView(discord.ui.View):
                 
             summary = "\n".join(cal_results) if cal_results else "ℹ️ No calendar updates performed."
             await interaction.followup.send(f"**Done!**\n{archive_msg}\n{summary}\n\n*Closing thread...*")
+            self.confirmed = True
+            self.stop()
             await asyncio.sleep(5)
             try:
                 await interaction.channel.edit(archived=True, locked=True)
@@ -754,13 +777,19 @@ class FinalizeView(discord.ui.View):
                 pass
         except Exception as e:
             logger.error(f"Error in approve: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ An error occurred during processing: {e}")
+            await interaction.followup.send(f"❌ An error occurred: {e}")
+
+    @discord.ui.button(label="📝 Edit Fields", style=discord.ButtonStyle.secondary)
+    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = EditModal(self.row)
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+        if modal.confirmed:
+            self.edit_requested = True
+            self.stop()
 
 async def run_review_process(thread: discord.Thread, filepath: Path, action_type: str, row: dict, changelog: dict):
     """The interactive Q&A loop inside the thread."""
-    # We use the row passed in (which is merged with master data if an update)
-    # instead of re-reading from Bits which would lose IDs.
-    
     if action_type == "appended":
         await thread.send(f"🆕 **New Gig Detected!**\nVenue: `{row.get('Venue')}`\nDate: `{row.get('Starting Date')}`")
     else:
@@ -771,19 +800,19 @@ async def run_review_process(thread: discord.Thread, filepath: Path, action_type
             if changelog.get('needs_mapbot'):
                 await thread.send("⚠️ Location changed—MAPBOT will need to recalculate.")
 
-    # Identify Missing Details
-    ignore = ["Calendar Start", "Calendar End", "Est. Mileage"] + WORKFLOW_FIELDS
-    missing = [k for k, v in row.items() if not v and k not in ignore]
-
-    if missing:
-        await thread.send(f"**Missing Details:** {', '.join(missing)}\nReply with `field: value` to update, or `done` to finish.")
-
-    # 2. Logistics Questions (MAPBOT)
+    # 1. Logistics Questions (MAPBOT) FIRST
     await thread.send("🚚 **Logistics Check:** Are we staying the night after this gig? (Yes/No)")
     try:
         def check_bot(m): return m.channel.id == thread.id and not m.author.bot
-        msg = await bot.wait_for('message', check=check_bot, timeout=300)
-        if "yes" in msg.content.lower():
+        async def get_logistics_response():
+            while True:
+                msg = await bot.wait_for('message', check=check_bot, timeout=300)
+                content = msg.content.lower().strip()
+                if content in ["yes", "no", "y", "n"]: return content
+                await thread.send("Please answer with 'Yes' or 'No'.")
+
+        resp = await get_logistics_response()
+        if resp in ["yes", "y"]:
             row["Accomodations"] = "TRUE"
             await thread.send("🏨 Where are we staying? (Address or 'skip')")
             addr_msg = await bot.wait_for('message', check=check_bot, timeout=300)
@@ -793,84 +822,80 @@ async def run_review_process(thread: discord.Thread, filepath: Path, action_type
         else:
             row["Accomodations"] = "FALSE"
             
-        # Step 2: Pit-stop Proposing
         try:
+            mapbot = get_mapbot_module()
             gigs = mapbot.get_sorted_gigs()
-            # Pass what we have to MAPBOT to check drive time
             if await mapbot.plan_route_for_gig(row, gigs):
                 if row.get("needs_pitstop"):
-                    await thread.send(f"🚚 *I see a long drive to {row.get('Venue')}. Do you want to add any food stops or attractions along the way?*")
+                    await thread.send(f"🚚 *I see a long drive to {row.get('Venue')}. Do you want to add any food stops or attractions? (Type stops or 'skip')*")
                     pitstop_msg = await bot.wait_for('message', check=check_bot, timeout=300)
-                    if pitstop_msg.content.lower() not in ["no", "none", "skip"]:
-                        stops = pitstop_msg.content.strip()
-                        # Recalculate with waypoints
+                    content = pitstop_msg.content.strip()
+                    if content.lower() not in ["no", "none", "skip", "n", "yes", "y"]:
+                        stops = content
                         if await mapbot.plan_route_for_gig(row, gigs, waypoints_text=stops):
                             row["Other Details"] = (row.get("Other Details", "") + f"\n[Stops]: {stops}").strip()
                             await thread.send(f"✅ Route updated with stops: {stops}")
         except Exception as e:
             logger.error(f"Pit-stop check failed: {e}")
-
     except asyncio.TimeoutError:
         await thread.send("⏱ Logistics timeout. Skipping.")
 
-    # 3. Interactive loop for other fields (Step 1: Refactor to Ollama)
+    ignore = ["Calendar Start", "Calendar End", "Est. Mileage"] + WORKFLOW_FIELDS
+    missing = [k for k, v in row.items() if not v and k not in ignore]
+    if missing:
+        await thread.send(f"**Missing Details:** {', '.join(missing)}\nReply with `field: value` to update, or `done` to finish.")
+    else:
+        await thread.send("✅ No critical fields missing. You can still add details, or type `done` to proceed.")
+
     while True:
-
-        def check(m):
-            return m.channel.id == thread.id and not m.author.bot
+        def check(m): return m.channel.id == thread.id and not m.author.bot
+        current_missing = [k for k, v in row.items() if not v and k not in ignore]
         
-        try:
-            msg = await bot.wait_for('message', check=check, timeout=600)
-            content = msg.content.strip()
+        embed = discord.Embed(title="Final Review", color=0x2ecc71)
+        for k, v in row.items():
+            if v and k not in WORKFLOW_FIELDS:
+                val = str(v)
+                if len(val) > 1024:
+                    val = val[:1021] + "..."
+                embed.add_field(name=k, value=val, inline=True)
+        
+        needs_cal = True if action_type == "appended" else (changelog.get("needs_calendar_update") if changelog else False)
+        view = FinalizeView(filepath, row, action_type, needs_cal)
+        final_msg = await thread.send(embed=embed, view=view)
+        
+        msg_task = asyncio.create_task(bot.wait_for('message', check=check))
+        view_task = asyncio.create_task(view.wait())
+        
+        done, pending = await asyncio.wait([msg_task, view_task], return_when=asyncio.FIRST_COMPLETED)
+        for task in pending: task.cancel()
             
-            if content.lower() == 'done' or content.lower() == 'confirm':
-                break
-            
-            # Send to Ollama for extraction
-            extracted = await asyncio.to_thread(call_ollama_extract, content, missing)
-            
-            updates = []
-            extracted_dict = extracted.model_dump(by_alias=True)
-            for k, v in extracted_dict.items():
-                if v and k in missing:
-                    row[k] = v
-                    updates.append(f"- **{k}**: {v}")
-            
-            if updates:
-                await thread.send("✅ **I've understood and updated the following:**\n" + "\n".join(updates))
-                # Refresh missing list
-                missing = [k for k, v in row.items() if not v and k not in ignore]
-                if missing:
-                    await thread.send(f"**Still Missing:** {', '.join(missing)}")
+        if msg_task in done:
+            try:
+                msg = msg_task.result()
+                content = msg.content.strip()
+                if content.lower() in ['done', 'confirm']: pass
                 else:
-                    await thread.send("🎉 All details filled! Type `confirm` to finish.")
-            else:
-                # Fallback to manual if AI fails or user used old format
-                if ":" in content:
-                    key, val = content.split(":", 1)
-                    matches = difflib.get_close_matches(key.strip(), list(CSV_HEADERS), n=1, cutoff=0.6)
-                    if matches:
-                        row[matches[0]] = val.strip()
-                        await thread.send(f"✅ Set `{matches[0]}` to `{val.strip()}`")
-                        # Refresh missing list
-                        missing = [k for k, v in row.items() if not v and k not in ignore]
-                    else:
-                        await thread.send(f"❓ Could not find field matching `{key}`")
-                else:
-                    await thread.send("I didn't catch any new details. You can just talk to me, or use `field: value`!")
-                
-        except asyncio.TimeoutError:
-            await thread.send("⏱ **Review Timeout:** No activity detected for 10 minutes.")
-            return
+                    extracted = await asyncio.to_thread(call_ollama_extract, content, current_missing if current_missing else list(CSV_HEADERS))
+                    updates = []
+                    extracted_dict = extracted.model_dump(by_alias=True)
+                    for k, v in extracted_dict.items():
+                        if v and (not row.get(k) or k in content):
+                            row[k] = v
+                            updates.append(f"- **{k}**: {v}")
+                    if updates: await thread.send("✅ **Updated:**\n" + "\n".join(updates))
+                    elif ":" in content:
+                        key, val = content.split(":", 1)
+                        matches = difflib.get_close_matches(key.strip(), list(CSV_HEADERS), n=1, cutoff=0.6)
+                        if matches:
+                            row[matches[0]] = val.strip()
+                            await thread.send(f"✅ Set `{matches[0]}` to `{val.strip()}`")
+            except Exception as e: logger.error(f"Error in review loop: {e}")
+        elif view_task in done:
+            if view.confirmed: break
+            if view.edit_requested: continue
+        try: await final_msg.delete()
+        except: pass
 
-    # Final review embed
-    embed = discord.Embed(title="Final Review", color=0x2ecc71)
-    for k, v in row.items():
-        if v and k not in WORKFLOW_FIELDS:
-            embed.add_field(name=k, value=v, inline=True)
-    
-    needs_cal = True if action_type == "appended" else (changelog.get("needs_calendar_update") if changelog else False)
-    await thread.send(embed=embed, view=FinalizeView(filepath, row, action_type, needs_cal))
 
 # ------------------------------------------------------------------
 # Bot Setup & Cog Integration
@@ -903,6 +928,9 @@ def load_state():
     global notified_files
     if STATE_FILE.exists():
         try:
+            if STATE_FILE.stat().st_size == 0:
+                logger.info("bot_state.json is empty. Starting fresh.")
+                return
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
                 notified_files = set(data.get("notified_files", []))
@@ -1055,9 +1083,10 @@ async def watch_folder():
     found_new = False
     # Read master rows for matching (Threaded)
     def read_master():
-        if not MASTER_CSV.exists(): return []
-        with open(MASTER_CSV, "r", newline="", encoding="utf-8") as f:
-            return list(csv.DictReader(f))
+        with get_master_lock():
+            if not MASTER_CSV.exists(): return []
+            with open(MASTER_CSV, "r", newline="", encoding="utf-8") as f:
+                return list(csv.DictReader(f))
     
     try:
         master_rows = await asyncio.to_thread(read_master)
