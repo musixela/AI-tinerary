@@ -1,5 +1,5 @@
 #!/bin/bash
-# setup.sh - AI-tinerary First-Time Setup Script
+# setup.sh - AI-tinerary First-Time Setup Script (Modern GUI Edition)
 # This script sets up the Python virtual environment and installs dependencies.
 # Works on macOS and Linux.
 

@@ -4,6 +4,7 @@ pypdf
 pydantic
 python-dotenv
 filelock
+customtkinter
 
 # Geocoding & Routing
 geopy

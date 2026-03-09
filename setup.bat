@@ -1,5 +1,5 @@
 @echo off
-REM setup.bat - AI-tinerary First-Time Setup Script for Windows
+REM setup.bat - AI-tinerary First-Time Setup Script for Windows (Modern GUI Edition)
 REM This script sets up the Python virtual environment and installs dependencies.
 
 setlocal enabledelayedexpansion
