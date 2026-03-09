@@ -77,6 +77,11 @@ _ai_csv = importlib.util.module_from_spec(_csv_spec)
 _csv_spec.loader.exec_module(_ai_csv)
 call_ollama_extract = _ai_csv.call_ollama_extract
 
+# Import mapbot module
+_map_spec = importlib.util.spec_from_file_location("mapbot", ROOT_DIR / "AI-tinerary-MAPBOT.py")
+mapbot = importlib.util.module_from_spec(_map_spec)
+_map_spec.loader.exec_module(mapbot)
+
 # ------------------------------------------------------------------
 # Stage 1: Row Matching
 # ------------------------------------------------------------------
@@ -653,10 +658,28 @@ async def run_review_process(thread: discord.Thread, filepath: Path, action_type
                 await thread.send(f"✅ Set accommodation address to `{row['Accom Address']}`")
         else:
             row["Accomodations"] = "FALSE"
+            
+        # Step 2: Pit-stop Proposing
+        try:
+            gigs = mapbot.get_sorted_gigs()
+            # Pass what we have to MAPBOT to check drive time
+            if await mapbot.plan_route_for_gig(row, gigs):
+                if row.get("needs_pitstop"):
+                    await thread.send(f"🚚 *I see a long drive to {row.get('Venue')}. Do you want to add any food stops or attractions along the way?*")
+                    pitstop_msg = await bot.wait_for('message', check=check_bot, timeout=300)
+                    if pitstop_msg.content.lower() not in ["no", "none", "skip"]:
+                        stops = pitstop_msg.content.strip()
+                        # Recalculate with waypoints
+                        if await mapbot.plan_route_for_gig(row, gigs, waypoints_text=stops):
+                            row["Other Details"] = (row.get("Other Details", "") + f"\n[Stops]: {stops}").strip()
+                            await thread.send(f"✅ Route updated with stops: {stops}")
+        except Exception as e:
+            logger.error(f"Pit-stop check failed: {e}")
+
     except asyncio.TimeoutError:
         await thread.send("⏱ Logistics timeout. Skipping.")
 
-    # 3. Interactive loop for other fields
+    # 3. Interactive loop for other fields (Step 1: Refactor to Ollama)
     while True:
 
         def check(m):
@@ -669,22 +692,41 @@ async def run_review_process(thread: discord.Thread, filepath: Path, action_type
             if content.lower() == 'done' or content.lower() == 'confirm':
                 break
             
-            if ":" in content:
-                key, val = content.split(":", 1)
-                key = key.strip()
-                val = val.strip()
-                # Fuzzy match key to headers
-                matches = difflib.get_close_matches(key, list(CSV_HEADERS), n=1, cutoff=0.6)
-                if matches:
-                    row[matches[0]] = val
-                    await thread.send(f"✅ Set `{matches[0]}` to `{val}`")
+            # Send to Ollama for extraction
+            extracted = await asyncio.to_thread(call_ollama_extract, content, missing)
+            
+            updates = []
+            extracted_dict = extracted.model_dump(by_alias=True)
+            for k, v in extracted_dict.items():
+                if v and k in missing:
+                    row[k] = v
+                    updates.append(f"- **{k}**: {v}")
+            
+            if updates:
+                await thread.send("✅ **I've understood and updated the following:**\n" + "\n".join(updates))
+                # Refresh missing list
+                missing = [k for k, v in row.items() if not v and k not in ignore]
+                if missing:
+                    await thread.send(f"**Still Missing:** {', '.join(missing)}")
                 else:
-                    await thread.send(f"❓ Could not find field matching `{key}`")
+                    await thread.send("🎉 All details filled! Type `confirm` to finish.")
             else:
-                await thread.send("Type `field: value` to update a field, or `done` to finish.")
+                # Fallback to manual if AI fails or user used old format
+                if ":" in content:
+                    key, val = content.split(":", 1)
+                    matches = difflib.get_close_matches(key.strip(), list(CSV_HEADERS), n=1, cutoff=0.6)
+                    if matches:
+                        row[matches[0]] = val.strip()
+                        await thread.send(f"✅ Set `{matches[0]}` to `{val.strip()}`")
+                        # Refresh missing list
+                        missing = [k for k, v in row.items() if not v and k not in ignore]
+                    else:
+                        await thread.send(f"❓ Could not find field matching `{key}`")
+                else:
+                    await thread.send("I didn't catch any new details. You can just talk to me, or use `field: value`!")
                 
         except asyncio.TimeoutError:
-            await thread.send("⏱ **Review Timeout:** No activity detected for 10 minutes. This review session is closing. You can restart it by clicking 'Review' again on the original message.")
+            await thread.send("⏱ **Review Timeout:** No activity detected for 10 minutes.")
             return
 
     # Final review embed

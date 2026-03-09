@@ -87,66 +87,72 @@ Format as a clean Markdown bulleted list. Keep it fun but highly practical. Do n
             logger.error(f"Ollama Survival Guide failed: {e}")
             return "*Could not generate survival guide (AI offline).*_ \n\n **Standard Checklist:**\n- [ ] Instruments & Cables\n- [ ] Merch & Cash Box\n- [ ] Hotel Info"
 
-    def calculate_timeline(self, gig, interview_data):
-        """Merges fixed CSV times with Interview times and calculates Free Time."""
-        events = []
+    async def generate_full_itinerary(self, gig, interview_data):
+        """Asks Ollama to generate a detailed minute-by-minute schedule (Step 3)."""
         date_str = gig.get("Starting Date")
+        venue = gig.get("Venue", "Unknown Venue")
+        loc = gig.get("Location", "")
+        routing = gig.get("Routing", "N/A")
         
-        # Helper to parse times safely
-        def add_event(time_str, label, desc):
-            if not time_str: return
-            try:
-                # Handle ISO formats or loose times
-                if "T" in time_str: 
-                    dt = parser.parse(time_str)
-                else:
-                    dt = parser.parse(f"{date_str} {time_str}")
-                    # Midnight Crossover Heuristic:
-                    # If the time is early AM (00:00 - 04:00), we assume it's the next calendar day
-                    # (i.e., after the midnight crossover of a late-night gig).
-                    if (dt.hour, dt.minute) < (4, 1):
-                        dt += timedelta(days=1)
-                events.append({"time": dt, "label": label, "desc": desc})
-            except Exception as e:
-                logger.warning(f"Could not parse time '{time_str}' for {label}: {e}")
+        # Gather all known time data
+        known_times = {
+            "Departure": gig.get("Departure Time"),
+            "Load In": gig.get("Load In"),
+            "Doors": gig.get("Doors"),
+            "Show Time": gig.get("Time"),
+            "End": gig.get("Calendar End"),
+            "Soundcheck": interview_data.get("soundcheck"),
+            "Dinner": interview_data.get("dinner"),
+            "Other Notes": interview_data.get("other"),
+            "Waypoints/Stops": gig.get("Other Details", "")
+        }
+        
+        system_prompt = f"""
+You are an expert Tour Manager. Create a highly detailed, minute-by-minute schedule for a band gig on {date_str} at {venue} in {loc}.
+Fill in logical gaps (Wake-Up, Breakfast, Hotel Check-In, Load-out, Expected Stops) based on the provided known times and routing.
 
-        # 1. Standard CSV Events
-        add_event(gig.get("Departure Time"), "🚐 Departure", f"Leave {gig.get('Routing', '').split('->')[0].strip() or 'Home'}")
-        add_event(gig.get("Load In"), "📦 Load In", "Arrive at venue, load gear.")
-        add_event(gig.get("Doors"), "🚪 Doors", "Venue opens to public.")
-        add_event(gig.get("Time"), "🤘 Show Time", "Set begins.")
-        add_event(gig.get("Calendar End"), "🍻 End", "Approximate end/load out.")
+KNOWN TIMES & DATA:
+{json.dumps(known_times, indent=2)}
+ROUTING: {routing}
 
-        # 2. Interview Events
-        if interview_data.get("soundcheck"):
-            add_event(interview_data["soundcheck"], "🎤 Soundcheck", "Line check and levels.")
-        if interview_data.get("dinner"):
-            add_event(interview_data["dinner"], "🍔 Dinner", "Band meal.")
-        if interview_data.get("other"):
-            add_event(interview_data["other"], "📌 Note", "Custom event.")
+RULES:
+1. Return ONLY the Markdown schedule.
+2. Be extremely detailed.
+3. If no Departure Time is provided, assume a reasonable one based on drive time.
+4. Fill in missing meals and logistics logically.
 
-        # 3. Sort chronologically
-        events.sort(key=lambda x: x["time"])
+EXAMPLE FORMAT TO MIMIC:
+March 23rd
+6:00 A.M. - Breakfast in Atlanta (McDonalds - Tentative)
+8:00 A.M. - Atlanta Zoo
+1:30 P.M. - Lunch in Zoo
+4:30 P.M. - Georgia Aquarium
+7:30 P.M. - Hotel Check-In
+10:00 P.M. - Hotel Shut-Eye
 
-        # 4. Inject "Free Time" Buffers
-        timeline = []
-        for i in range(len(events)):
-            timeline.append(events[i])
-            if i < len(events) - 1:
-                gap_minutes = (events[i+1]["time"] - events[i]["time"]).total_seconds() / 60
-                # If there's an unexplained gap of > 75 minutes, inject a free time block
-                if gap_minutes > 75:
-                    free_start = events[i]["time"] + timedelta(minutes=15) # Assuming event takes 15m to wrap
-                    timeline.append({
-                        "time": free_start,
-                        "label": "🛋️ Free Time",
-                        "desc": f"~{int(gap_minutes - 15)} mins of buffer time."
-                    })
+March 24th
+6:30 A.M. - Wake-Up
+7:00 A.M. - Breakfast at Hotel
+8:00 A.M. - World of Coke
+10:30 A.M. - Six Flags
+7:00 P.M. - Leave Six Flags for Bus
+10:00 P.M. - Depart for Next City (Expected Stops: 2)
+"""
+        try:
+            r = await asyncio.to_thread(
+                requests.post, 
+                OLLAMA_URL, 
+                json={"model": OLLAMA_MODEL, "prompt": system_prompt, "stream": False}, 
+                timeout=120
+            )
+            r.raise_for_status()
+            return r.json().get("response", "*AI Generation failed.*")
+        except Exception as e:
+            logger.error(f"Ollama Itinerary failed: {e}")
+            return "*Could not generate detailed itinerary (AI offline).*"
 
-        return timeline
-
-    def generate_markdown(self, gigs, all_interview_data, survival_guide, filename):
-        """Constructs the beautiful Markdown artifact."""
+    async def generate_markdown(self, gigs, all_interview_data, survival_guide, filename):
+        """Constructs the beautiful Markdown artifact (Refactored for Step 3)."""
         
         md = f"# 🎸 Tour Packet: {gigs[0]['Starting Date']}"
         if len(gigs) > 1:
@@ -161,19 +167,10 @@ Format as a clean Markdown bulleted list. Keep it fun but highly practical. Do n
             
             md += f"## 📅 {date_str} - {venue} ({loc})\n"
             
-            # Timeline
+            # Timeline (Step 3: AI-Driven Scheduling)
             md += "### ⏱️ The Timeline\n"
-            timeline = self.calculate_timeline(gig, all_interview_data.get(date_str, {}))
-            if not timeline:
-                md += "*No time data available.*\n"
-            else:
-                for event in timeline:
-                    time_fmt = event["time"].strftime("%I:%M %p")
-                    # Italicize Free Time
-                    if "Free Time" in event["label"]:
-                        md += f"* **{time_fmt}** - *{event['label']} ({event['desc']})*\n"
-                    else:
-                        md += f"* **{time_fmt}** - **{event['label']}** ({event['desc']})\n"
+            itinerary = await self.generate_full_itinerary(gig, all_interview_data.get(date_str, {}))
+            md += itinerary + "\n"
             
             # Details
             md += "\n### 📋 Gig Details\n"
@@ -199,7 +196,6 @@ Format as a clean Markdown bulleted list. Keep it fun but highly practical. Do n
         filepath = ITINERARIES_DIR / filename
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(md)
-            
         return filepath
 
     @commands.group(name="tinny", aliases=["tinnybot"], invoke_without_command=True)
@@ -243,9 +239,6 @@ Format as a clean Markdown bulleted list. Keep it fun but highly practical. Do n
             try:
                 msg = await self.bot.wait_for('message', check=check, timeout=120)
                 if msg.content.lower() != 'skip':
-                    # Best effort to extract time vs notes. If they write "5:30 PM at Venue", dateutil handles it decently, 
-                    # but we will just pass the whole string to dateutil later and hope for the best, 
-                    # or they can just provide time. Let's ask for strict time.
                     all_interview_data[date_str]["dinner"] = msg.content.strip()
             except asyncio.TimeoutError:
                  await thread.send("⏱ Timeout. Skipping dinner.")
@@ -267,7 +260,7 @@ Format as a clean Markdown bulleted list. Keep it fun but highly practical. Do n
         filename = f"Tour_Packet_{start_date}.md"
         if end_date: filename = f"Tour_Packet_{start_date}_to_{end_date}.md"
         
-        filepath = self.generate_markdown(gigs, all_interview_data, survival_guide, filename)
+        filepath = await self.generate_markdown(gigs, all_interview_data, survival_guide, filename)
 
         # 4. Upload to Discord
         await thread.send("✅ **Tour Packet Generated!** Ready for the road.", file=discord.File(filepath))

@@ -77,12 +77,18 @@ async def get_coords(address: str, venue: str = None, location: str = None):
             logger.error(f"Geocoding error for '{query}': {e}")
     return None
 
-def get_driving_data(dest_coords, origin_coords):
+def get_driving_data(dest_coords, origin_coords, waypoints=None):
     """
     Get driving distance (miles) and duration (seconds) from ORS.
     Returns: (miles, duration_seconds) or (miles_fallback, None)
     """
     if not dest_coords or not origin_coords: return None, None
+    
+    # Construct coordinate list: [origin, waypoints..., destination]
+    coords = [origin_coords]
+    if waypoints:
+        coords.extend(waypoints)
+    coords.append(dest_coords)
     
     kwargs = {"key": ORS_API_KEY}
     if not ORS_API_KEY and ORS_BASE_URL:
@@ -92,7 +98,7 @@ def get_driving_data(dest_coords, origin_coords):
         try:
             client = openrouteservice.Client(**kwargs)
             route = client.directions(
-                coordinates=[origin_coords, dest_coords],
+                coordinates=coords,
                 profile="driving-car",
                 format="json"
             )
@@ -145,7 +151,7 @@ def get_previous_gig(gigs, current_gig):
 # MAPBOT Core Logic
 # ------------------------------------------------------------------
 
-async def plan_route_for_gig(gig, gigs):
+async def plan_route_for_gig(gig, gigs, waypoints_text=None):
     """
     1. Determine Origin (Prev gig or Home Base)
     2. Geocode Addresses (with Fallbacks)
@@ -178,8 +184,20 @@ async def plan_route_for_gig(gig, gigs):
     origin_coords = await get_coords(origin_address)
     dest_coords = await get_coords(dest_address, venue=dest_name, location=dest_loc)
     
+    # Step 2: Handle Waypoints
+    waypoints_coords = []
+    if waypoints_text:
+        import re
+        stops = re.split(r",| and |&", waypoints_text)
+        for stop in stops:
+            stop = stop.strip()
+            if not stop: continue
+            w_coords = await get_coords(stop)
+            if w_coords:
+                waypoints_coords.append(w_coords)
+    
     # 3. Get Data (Threaded)
-    miles, duration = await asyncio.to_thread(get_driving_data, dest_coords, origin_coords)
+    miles, duration = await asyncio.to_thread(get_driving_data, dest_coords, origin_coords, waypoints_coords)
     
     if miles is not None:
         gig["Mileage"] = f"{miles:.2f}"
@@ -187,6 +205,11 @@ async def plan_route_for_gig(gig, gigs):
         
         if duration:
             hours_drive = duration / 3600
+            
+            # Step 2: Detect long drive (> 3 hours)
+            if hours_drive > 3:
+                gig["needs_pitstop"] = True
+            
             # 4. Dynamic Buffer: 15 mins per 2 hours
             buffer_mins = int((hours_drive / 2.0) * 15)
             # Minimum 15m buffer if > 0

@@ -153,21 +153,27 @@ def process_mileage(data: ContractData):
     else:
         logger.warning("Mileage skipped: Destination not found.")
 
-def call_ollama_extract(text: str) -> ContractData:
+def call_ollama_extract(text: str, focus_fields: list = None) -> ContractData:
     """Extract show data via local AI with strict formatting."""
+    keys = focus_fields if focus_fields else CSV_HEADERS
     system = f"""
-Extract tour contract details into a JSON object with these EXACT keys: {json.dumps(CSV_HEADERS)}.
+Extract tour contract details into a JSON object with these EXACT keys: {json.dumps(keys)}.
 RULES:
 1. Values must be simple strings.
 2. Join multiple values with commas.
 3. Return ONLY raw JSON.
+4. If a value is unknown, return an empty string.
 """
     try:
         r = requests.post(OLLAMA_URL, json={"model": OLLAMA_MODEL, "prompt": f"{system}\n\nTEXT:\n{text}", "stream": False, "format": "json"}, timeout=180)
         r.raise_for_status()
         raw_json = json.loads(r.json().get("response", "{}"))
-        # Clean the dict to match Pydantic model (some LLMs might return aliases or attribute names)
-        # We'll use populate_by_name=True in Pydantic Config to handle aliases.
+        # Fill in missing fields with empty strings if focus_fields was used
+        if focus_fields:
+            full_data = {k: "" for k in CSV_HEADERS}
+            full_data.update(raw_json)
+            raw_json = full_data
+        
         return ContractData(**raw_json)
     except Exception as e:
         logger.error(f"AI Extraction failed: {e}")
